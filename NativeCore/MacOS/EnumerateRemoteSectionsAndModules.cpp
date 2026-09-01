@@ -15,7 +15,7 @@ namespace
 	{
 		uint64_t Start;
 		uint64_t End;
-		char Name[16];
+		char Name[17];
 	};
 
 	struct Module
@@ -67,8 +67,12 @@ namespace
 			return false;
 		}
 
+		if (header.sizeofcmds == 0 || header.sizeofcmds > 1024 * 1024)
+		{
+			return false;
+		}
 		std::vector<uint8_t> commands(header.sizeofcmds);
-		if (header.sizeofcmds == 0 || header.sizeofcmds > 1024 * 1024 || !ReadRemote(task, base + sizeof(header), commands.data(), commands.size()))
+		if (!ReadRemote(task, base + sizeof(header), commands.data(), commands.size()))
 		{
 			return false;
 		}
@@ -81,7 +85,7 @@ namespace
 		{
 			const auto* lc = reinterpret_cast<const load_command*>(commands.data() + offset);
 			if (lc->cmdsize < sizeof(load_command) || offset + lc->cmdsize > commands.size()) break;
-			if (lc->cmd == LC_SEGMENT_64)
+			if (lc->cmd == LC_SEGMENT_64 && lc->cmdsize >= sizeof(segment_command_64))
 			{
 				const auto* seg = reinterpret_cast<const segment_command_64*>(lc);
 				if (std::strncmp(seg->segname, "__TEXT", 16) == 0) { textVmAddr = seg->vmaddr; haveText = true; }
@@ -91,13 +95,12 @@ namespace
 		if (!haveText) return false;
 		const uint64_t slide = base - textVmAddr;
 
-		uint64_t lowest = UINT64_MAX, highest = 0;
 		offset = 0;
 		for (uint32_t i = 0; i < header.ncmds && offset + sizeof(load_command) <= commands.size(); ++i)
 		{
 			const auto* lc = reinterpret_cast<const load_command*>(commands.data() + offset);
 			if (lc->cmdsize < sizeof(load_command) || offset + lc->cmdsize > commands.size()) break;
-			if (lc->cmd == LC_SEGMENT_64)
+			if (lc->cmd == LC_SEGMENT_64 && lc->cmdsize >= sizeof(segment_command_64))
 			{
 				const auto* seg = reinterpret_cast<const segment_command_64*>(lc);
 				if (std::strncmp(seg->segname, "__PAGEZERO", 16) != 0 && seg->vmsize > 0)
@@ -107,8 +110,6 @@ namespace
 					s.End = s.Start + seg->vmsize;
 					std::strncpy(s.Name, seg->segname, 16);
 					module.Segments.push_back(s);
-					lowest = std::min(lowest, s.Start);
-					highest = std::max(highest, s.End);
 				}
 			}
 			offset += lc->cmdsize;
@@ -116,7 +117,52 @@ namespace
 
 		if (module.Segments.empty()) return false;
 		module.Base = base;
-		module.Size = highest - base;
+
+		// Size is the extent of segments contiguous from `base`, not the span of all
+		// segments: shared-cache images can have segments scattered far apart in the
+		// cache mapping, which would otherwise make Size span gigabytes and overlap
+		// neighboring modules.
+		{
+			std::vector<Segment> sorted = module.Segments;
+			std::sort(sorted.begin(), sorted.end(), [](const Segment& a, const Segment& b) { return a.Start < b.Start; });
+			uint64_t end = 0;
+			bool haveStart = false;
+			for (const auto& seg : sorted)
+			{
+				if (!haveStart)
+				{
+					if (seg.Start != base) continue;
+					end = seg.End;
+					haveStart = true;
+					continue;
+				}
+				if (seg.Start <= end)
+				{
+					end = std::max(end, seg.End);
+				}
+				else
+				{
+					break;
+				}
+			}
+			if (haveStart)
+			{
+				module.Size = end - base;
+			}
+			else
+			{
+				// No segment starts exactly at base (shouldn't normally happen since
+				// __TEXT's slid address equals base); fall back to __TEXT's own vmsize.
+				for (const auto& seg : module.Segments)
+				{
+					if (std::strncmp(seg.Name, "__TEXT", 16) == 0)
+					{
+						module.Size = seg.End - seg.Start;
+						break;
+					}
+				}
+			}
+		}
 		return true;
 	}
 

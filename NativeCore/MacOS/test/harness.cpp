@@ -97,6 +97,19 @@ int main(int argc, char** argv)
 	}
 	CHECK(sleepBase != nullptr, "main executable module found");
 	CHECK(sawLibSystem, "libSystem module found");
+	bool anyOverlap = false;
+	for (size_t i = 0; i < g_modules.size() && !anyOverlap; ++i)
+	{
+		auto aStart = reinterpret_cast<uint64_t>(g_modules[i].BaseAddress);
+		auto aEnd = aStart + static_cast<uint64_t>(g_modules[i].Size);
+		for (size_t j = i + 1; j < g_modules.size(); ++j)
+		{
+			auto bStart = reinterpret_cast<uint64_t>(g_modules[j].BaseAddress);
+			auto bEnd = bStart + static_cast<uint64_t>(g_modules[j].Size);
+			if (aStart < bEnd && bStart < aEnd) { anyOverlap = true; break; }
+		}
+	}
+	CHECK(!anyOverlap, "module ranges do not overlap");
 	bool sawCode = false, sawImageSection = false;
 	for (auto& s : g_sections) { if (s.Category == SectionCategory::CODE) sawCode = true; if (s.Type == SectionType::Image) sawImageSection = true; }
 	CHECK(sawCode, "at least one CODE section");
