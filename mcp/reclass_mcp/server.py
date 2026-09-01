@@ -479,7 +479,8 @@ async def scan_first(
     `value2` is required for between/between_or_equal (as the upper bound).
     `settings` may include
     {start, stop, alignment, fast, writable, executable, cow, private, image, mapped}.
-    Fails with `busy` if a scan is already running.
+    Fails with `busy` if a scan is already running. The scan runs asynchronously:
+    poll scan_status until `running` is false before calling scan_results or scan_next.
     Returns JSON: {job, total?}."""
     params: dict[str, Any] = {"value_type": value_type, "compare": compare, "value": value}
     if value2 is not None:
@@ -497,6 +498,8 @@ async def scan_next(compare: str, value: Optional[Any] = None, value2: Optional[
     less_than, less_than_or_equal, decreased, decreased_or_equal, between,
     between_or_equal, unknown.
     `value2` is required for between/between_or_equal (as the upper bound).
+    Poll scan_status until `running` is false (this scan and any prior one) before
+    calling scan_next or scan_results.
     Returns JSON: {job}."""
     params: dict[str, Any] = {"compare": compare}
     if value is not None:
@@ -509,13 +512,18 @@ async def scan_next(compare: str, value: Optional[Any] = None, value2: Optional[
 @mcp.tool()
 async def scan_status() -> str:
     """Get the running scan's progress. No params.
-    Returns JSON: {running, progress, total}."""
+    Poll this until `running` is false before calling scan_results, scan_next, or
+    scan_undo (they fail with `busy` while a scan is in progress). `success` is set
+    once the scan finishes; `error` holds a message if it failed, else null.
+    Returns JSON: {running, progress, total, success, error}."""
     return _dump(await _invoke("scan.status"))
 
 
 @mcp.tool()
 async def scan_results(offset: int = 0, limit: int = 1000) -> str:
     """Page through the current scan's results.
+    Fails with `busy` while a scan is running: poll scan_status until `running`
+    is false before calling this.
     Returns JSON: {total, results:[{address, value}]}."""
     return _dump(await _invoke("scan.results", offset=offset, limit=limit))
 
@@ -523,6 +531,8 @@ async def scan_results(offset: int = 0, limit: int = 1000) -> str:
 @mcp.tool()
 async def scan_undo() -> str:
     """Undo the last scan step, restoring the previous result set. No params.
+    Fails with `busy` while a scan is running: poll scan_status until `running`
+    is false before calling this.
     Returns JSON: {ok, total}."""
     return _dump(await _invoke("scan.undo"))
 

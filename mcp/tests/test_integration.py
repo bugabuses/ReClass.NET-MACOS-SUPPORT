@@ -18,6 +18,7 @@ small adjustments once it exists.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import subprocess
 import sys
@@ -142,6 +143,24 @@ async def test_class_create_get_node_change_type_codegen_roundtrip(client: RcCli
         await client.call("class.delete", **{"class": class_name, "force": True})
 
 
+async def _wait_for_scan_idle(client: RcClient, timeout: float = 60.0) -> dict:
+    """Poll scan.status until the scan is no longer running.
+
+    The plugin rejects scan.results/scan.undo/scan.next with -32006 "busy"
+    while a scan is in progress, so every caller must wait for
+    `running: false` before issuing any of those.
+    """
+    deadline = asyncio.get_event_loop().time() + timeout
+    status: dict = {}
+    while asyncio.get_event_loop().time() < deadline:
+        status = await client.call("scan.status")
+        if not status.get("running"):
+            assert status.get("error") is None
+            return status
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"scan did not finish within {timeout}s: {status}")
+
+
 async def test_scan_first_status_results(client: RcClient, attached):
     # value_type/compare are lowercase, plugin-defined keys (ScannerApi.cs):
     # value_type in {byte, short, integer/int, long, float, double,
@@ -158,8 +177,9 @@ async def test_scan_first_status_results(client: RcClient, attached):
     )
     assert "job" in first
 
-    status = await client.call("scan.status")
-    assert "running" in status
+    # scan.results/scan.undo/scan.next are rejected with -32006 "busy" while
+    # the scan is still running, so wait for it to finish first.
+    await _wait_for_scan_idle(client)
 
     results = await client.call("scan.results", offset=0, limit=10)
     assert "total" in results and "results" in results
