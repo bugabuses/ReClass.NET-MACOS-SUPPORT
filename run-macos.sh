@@ -32,5 +32,24 @@ fi
 # unsupported/broken Carbon driver on macOS and throws
 # EntryPointNotFoundException (HIViewPlaceInSuperviewAt).
 export MONO_MWF_MAC_FORCE_X11=1
+
+# Work around a SIGSEGV in Mono's X11Keyboard.CreateXic -> XGetIMValues:
+# XGetIMValues is a variadic Xlib call, and Mono's P/Invoke marshalling of
+# variadic functions on arm64 passes arguments in registers where libX11's
+# va_list handling (_XIMCountVaList) expects them on the stack, corrupting
+# memory and crashing the process. Setting XMODIFIERS=@im=none alone does
+# NOT avoid this: XOpenIM() still succeeds (falling back to a built-in
+# input method) and Mono still calls the crashing XGetIMValues(). Instead
+# we interpose XOpenIM via DYLD_INSERT_LIBRARIES to always return NULL, so
+# Mono's CreateXic() bails out before ever calling XGetIMValues(). This
+# disables X11 input-method/compose-key support; ordinary keyboard input
+# still works via core XKeyEvents. See scripts/xim-shim.c and
+# scripts/build-xim-shim-macos.sh.
+XIM_SHIM="$DIR/Dependencies/macos/xim-shim/libximshim.dylib"
+if [ ! -f "$XIM_SHIM" ]; then
+	echo "libximshim.dylib not found. Run scripts/build-xim-shim-macos.sh first." >&2
+	exit 1
+fi
+
 cd "$APP"
-exec sudo -E env DISPLAY="$DISPLAY" DYLD_LIBRARY_PATH="$DYLD_LIBRARY_PATH" MONO_MWF_MAC_FORCE_X11=1 "$(command -v mono)" ReClass.NET.exe "$@"
+exec sudo -E env DISPLAY="$DISPLAY" DYLD_LIBRARY_PATH="$DYLD_LIBRARY_PATH" DYLD_INSERT_LIBRARIES="$XIM_SHIM" MONO_MWF_MAC_FORCE_X11=1 "$(command -v mono)" ReClass.NET.exe "$@"
