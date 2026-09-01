@@ -91,12 +91,14 @@ macos_update:
 macos_debug:
 	$(MACOS_XBUILD_ANYCPU) /p:Configuration=Debug ReClass.NET_Launcher/ReClass.NET_Launcher.csproj
 	$(MACOS_XBUILD) /p:Configuration=Debug ReClass.NET/ReClass.NET.csproj
+	$(MACOS_XBUILD_ANYCPU) /p:Configuration=Debug ReClass.NET_McpPlugin/McpPlugin.csproj
 	$(MAKE) -C NativeCore/MacOS debug
 	$(MAKE) macos_dist_debug
 
 macos_release:
 	$(MACOS_XBUILD_ANYCPU) /p:Configuration=Release ReClass.NET_Launcher/ReClass.NET_Launcher.csproj
 	$(MACOS_XBUILD) /p:Configuration=Release ReClass.NET/ReClass.NET.csproj
+	$(MACOS_XBUILD_ANYCPU) /p:Configuration=Release ReClass.NET_McpPlugin/McpPlugin.csproj
 	$(MAKE) -C NativeCore/MacOS release
 	$(MAKE) macos_dist_release
 
@@ -106,6 +108,7 @@ macos_dist_debug:
 	-cp ReClass.NET_Launcher/bin/Debug/ReClass.NET_Launcher.exe build/Debug/x64/ 2>/dev/null
 	cp NativeCore/MacOS/build/debug/NativeCore.dylib build/Debug/x64/
 	cp -r Dependencies/x64/* build/Debug/x64/ 2>/dev/null || true
+	cp bin/Debug/Plugins/McpPlugin.dll build/Debug/x64/Plugins/
 
 macos_dist_release:
 	mkdir -p build/Release/x64/Plugins
@@ -113,11 +116,12 @@ macos_dist_release:
 	-cp ReClass.NET_Launcher/bin/Release/ReClass.NET_Launcher.exe build/Release/x64/ 2>/dev/null
 	cp NativeCore/MacOS/build/release/NativeCore.dylib build/Release/x64/
 	cp -r Dependencies/x64/* build/Release/x64/ 2>/dev/null || true
+	cp bin/Release/Plugins/McpPlugin.dll build/Release/x64/Plugins/
 
 macos: macos_release
 
 macos_clean:
-	rm -rf ReClass.NET/bin ReClass.NET/obj ReClass.NET_Launcher/bin ReClass.NET_Launcher/obj build
+	rm -rf ReClass.NET/bin ReClass.NET/obj ReClass.NET_Launcher/bin ReClass.NET_Launcher/obj bin obj build
 	$(MAKE) -C NativeCore/MacOS clean
 
 .PHONY: macos macos_update macos_debug macos_release macos_dist_debug macos_dist_release macos_clean
