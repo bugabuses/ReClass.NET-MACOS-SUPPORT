@@ -13,6 +13,7 @@ by chunks 1-3. Requires a running ReClass.NET with the plugin loaded and a
 import base64
 import json
 import os
+import tempfile
 import socket
 import struct
 import sys
@@ -230,10 +231,7 @@ def main():
     # Chunk 2: project / class / node / enum / codegen
     # ------------------------------------------------------------------
 
-    scratch = os.environ.get(
-        "SCRATCH",
-        "/private/tmp/claude-501/-Users-ops-Desktop-Reclass-Mac/"
-        "4daaa40c-5f25-412a-ba6e-07bf4fe08cf7/scratchpad")
+    scratch = os.environ.get("SCRATCH") or tempfile.mkdtemp(prefix="reclass-mcp-smoke-")
     project_path = os.path.join(scratch, "mcp-test.rcnet")
 
     check("project.new", c.result("project.new").get("ok") is True, "")
