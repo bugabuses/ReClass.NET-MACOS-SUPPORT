@@ -80,6 +80,11 @@ dist:
 MACOS_XBUILD = DYLD_LIBRARY_PATH=/opt/homebrew/lib xbuild /p:Platform=x64 /nologo /verbosity:minimal
 MACOS_XBUILD_ANYCPU = DYLD_LIBRARY_PATH=/opt/homebrew/lib xbuild /nologo /verbosity:minimal
 
+# NOTE: nuget restore is currently unneeded for the macOS build (Dependencies/
+# already ships the resolved packages) and is known NOT to work with this
+# xbuild/Mono combo on arm64 - Mono's bundled nuget.exe fails to resolve
+# against this solution's package sources under this xbuild version. Left
+# here only for reference; do not wire it into macos/macos_debug/macos_release.
 macos_update:
 	mono Dependencies/nuget.exe restore ReClass.NET.sln
 

@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 # Build libgdiplus from source with X11 (cairo-xlib) support, using
 # XQuartz's cairo (which has xlib support) instead of Homebrew's cairo
 # (which is usually built without it). This is required for Mono
@@ -9,22 +9,27 @@
 # Requires: brew install autoconf automake libtool pkg-config glib libpng \
 #           jpeg giflib libtiff libexif pango
 #           XQuartz installed (/opt/X11)
-set -e
+set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 SCRATCH="${SCRATCH:-$(mktemp -d)}"
 SRC="$SCRATCH/libgdiplus"
 PREFIX="$REPO/Dependencies/macos/libgdiplus"
 
+# Pinned to the commit that produced the currently-working build (verified
+# against the arm64/XQuartz toolchain in this repo's spike). Override with
+# LIBGDIPLUS_REF=<sha-or-ref> to build a different revision.
+LIBGDIPLUS_REF="${LIBGDIPLUS_REF:-94a49875487e296376f209fe64b921c6020f74c0}"
+
 mkdir -p "$SCRATCH"
 
-echo "==> Cloning libgdiplus into $SRC"
-if [ -d "$SRC/.git" ]; then
-	echo "    (already cloned, reusing)"
-else
-	rm -rf "$SRC"
-	git clone --depth 1 https://github.com/mono/libgdiplus.git "$SRC"
-fi
+echo "==> Cloning libgdiplus (ref=$LIBGDIPLUS_REF) into $SRC"
+rm -rf "$SRC"
+mkdir -p "$SRC"
+git -C "$SRC" init -q
+git -C "$SRC" remote add origin https://github.com/mono/libgdiplus.git
+git -C "$SRC" fetch --depth 1 origin "$LIBGDIPLUS_REF"
+git -C "$SRC" checkout -q FETCH_HEAD
 
 cd "$SRC"
 

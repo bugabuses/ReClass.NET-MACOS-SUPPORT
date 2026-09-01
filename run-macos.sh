@@ -23,11 +23,11 @@ export DISPLAY="${DISPLAY:-:0}"
 # usually built without X11 support and is missing
 # GdipCreateFromXDrawable_linux, needed by Mono WinForms' X11 backend.
 LOCAL_GDIPLUS="$DIR/Dependencies/macos/libgdiplus/lib"
-if [ -d "$LOCAL_GDIPLUS" ]; then
-	export DYLD_LIBRARY_PATH="$LOCAL_GDIPLUS:/opt/X11/lib:/opt/homebrew/lib"
-else
-	export DYLD_LIBRARY_PATH="/opt/homebrew/lib"
+if [ ! -d "$LOCAL_GDIPLUS" ]; then
+	echo "local libgdiplus not found; run scripts/build-libgdiplus-macos.sh" >&2
+	exit 1
 fi
+export DYLD_LIBRARY_PATH="$LOCAL_GDIPLUS:/opt/X11/lib:/opt/homebrew/lib"
 # Force Mono's WinForms X11 backend; otherwise it defaults to the
 # unsupported/broken Carbon driver on macOS and throws
 # EntryPointNotFoundException (HIViewPlaceInSuperviewAt).
