@@ -99,11 +99,11 @@ ReClass.NET runs on Apple Silicon macOS under Mono with the X11 WinForms backend
 **Prerequisites**
 
 ```
-brew install mono autoconf automake libtool pkg-config glib libpng jpeg giflib libtiff libexif pango
+brew install mono mono-libgdiplus autoconf automake libtool pkg-config glib libpng jpeg giflib libtiff libexif pango
 brew install --cask xquartz
 ```
 
-Then log out and back in, and start XQuartz once.
+Then log out and back in, and start XQuartz once. (Homebrew's libgdiplus is used only at build time; the X11-capable libgdiplus from `scripts/build-libgdiplus-macos.sh` is used at runtime.)
 
 **Build**
 
