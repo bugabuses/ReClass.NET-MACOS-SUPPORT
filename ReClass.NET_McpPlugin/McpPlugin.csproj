@@ -62,7 +62,12 @@
   <ItemGroup>
     <Compile Include="Endpoint.cs" />
     <Compile Include="McpPlugin.cs" />
+    <Compile Include="Api\ClassApi.cs" />
+    <Compile Include="Api\CodeGenApi.cs" />
+    <Compile Include="Api\EnumApi.cs" />
     <Compile Include="Api\MemoryApi.cs" />
+    <Compile Include="Api\NodeApi.cs" />
+    <Compile Include="Api\ProjectApi.cs" />
     <Compile Include="Api\ProcessApi.cs" />
     <Compile Include="Api\SystemApi.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
@@ -71,6 +76,8 @@
     <Compile Include="Rpc\RpcException.cs" />
     <Compile Include="Rpc\TcpJsonRpcServer.cs" />
     <Compile Include="Rpc\UiThread.cs" />
+    <Compile Include="Serialization\NodeDto.cs" />
+    <Compile Include="Serialization\NodeSelector.cs" />
     <Compile Include="Serialization\ValueCodec.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />

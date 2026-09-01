@@ -223,6 +223,192 @@ def main():
           and error_code(batch_response[2]) == -32601,
           "ids=%s" % [r.get("id") for r in batch_response])
 
+    # ------------------------------------------------------------------
+    # Chunk 2: project / class / node / enum / codegen
+    # ------------------------------------------------------------------
+
+    scratch = os.environ.get(
+        "SCRATCH",
+        "/private/tmp/claude-501/-Users-ops-Desktop-Reclass-Mac/"
+        "4daaa40c-5f25-412a-ba6e-07bf4fe08cf7/scratchpad")
+    project_path = os.path.join(scratch, "mcp-test.rcnet")
+
+    check("project.new", c.result("project.new").get("ok") is True, "")
+
+    created = c.result("class.create", name="McpTest", size=64)
+    check("class.create", created["name"] == "McpTest" and created["size"] == 64,
+          "uuid=%s size=%s" % (created["uuid"], created["size"]))
+
+    classes = c.result("class.list")
+    check("class.list contains McpTest",
+          any(cl["name"] == "McpTest" for cl in classes),
+          "%d classes: %s" % (len(classes), [cl["name"] for cl in classes]))
+
+    addr = c.result("class.set_address", **{"class": "McpTest",
+                                            "address_formula": "<sleep>"})
+    check("class.set_address",
+          addr["ok"] is True and int(addr["resolved"], 16) == base,
+          "resolved=%s" % addr["resolved"])
+
+    got = c.result("class.get", **{"class": "McpTest", "with_values": True})
+    kids = got["children"]
+    kinds = sorted(set(k["type"] for k in kids))
+    check("class.get default layout",
+          len(kids) > 0 and kinds == ["Hex64"] and sum(k["size"] for k in kids) == 64,
+          "%d children, types=%s, total=%d" % (len(kids), kinds,
+                                               sum(k["size"] for k in kids)))
+    check("class.get first value = Mach-O magic",
+          isinstance(kids[0]["value"], str)
+          and kids[0]["value"].upper().endswith("FEEDFACF"),
+          kids[0]["value"])
+
+    n0 = {"class": "McpTest", "path": [0]}
+    changed = c.result("node.change_type", node=n0, type="UInt32")
+    check("node.change_type -> UInt32", changed["type"] == "UInt32",
+          "size=%s" % changed["size"])
+
+    node0 = c.result("node.get", node=n0)
+    check("node.get value == 0xfeedfacf", node0["value"] == 4277009103,
+          str(node0["value"]))
+
+    c.result("node.rename", node=n0, name="magic")
+    c.result("node.comment", node=n0, comment="mach header")
+    node0 = c.result("node.get", node=n0)
+    check("node.rename / node.comment",
+          node0["name"] == "magic" and node0["comment"] == "mach header",
+          "%s // %s" % (node0["name"], node0["comment"]))
+
+    n1 = {"class": "McpTest", "path": [1]}
+    ptr = c.result("node.change_type", node=n1, type="Pointer",
+                   inner_type="UInt8")
+    check("node.change_type -> Pointer<UInt8>",
+          ptr["type"] == "Pointer" and ptr["inner"]["type"] == "UInt8",
+          "inner=%s" % ptr["inner"]["type"])
+
+    other = c.result("class.create", name="McpOther", size=16)
+    check("class.create McpOther", other["name"] == "McpOther", "")
+    c.result("class.select", **{"class": "McpTest"})
+
+    n2 = {"class": "McpTest", "path": [2]}
+    inst = c.result("node.change_type", node=n2, type="ClassInstance",
+                    class_ref="McpOther")
+    check("node.change_type -> ClassInstance",
+          inst["type"] == "ClassInstance" and inst["class_ref"] == "McpOther",
+          "class_ref=%s size=%s" % (inst["class_ref"], inst["size"]))
+
+    # Find a trailing Hex64 to turn into an array.
+    tree = c.result("class.get", **{"class": "McpTest"})
+    hex_index = next(i for i, k in enumerate(tree["children"])
+                     if k["type"] == "Hex64")
+    na = {"class": "McpTest", "path": [hex_index]}
+    arr = c.result("node.change_type", node=na, type="Array")
+    check("node.change_type -> Array", arr["type"] == "Array",
+          "count=%s inner=%s" % (arr["count"], arr["inner"]["type"]))
+    c.result("node.set_array", node=na, count=4)
+    arr = c.result("node.get", node=na)
+    check("node.set_array count=4", arr["count"] == 4,
+          "size=%s" % arr["size"])
+
+    c.result("node.set_hidden", node=na, hidden=True)
+    check("node.set_hidden", c.result("node.get", node=na)["hidden"] is True, "")
+    c.result("node.set_hidden", node=na, hidden=False)
+
+    types = c.result("node.types")
+    check("node.types", isinstance(types, list)
+          and any(t["name"] == "Hex64" for t in types)
+          and any(t["name"] == "Pointer" and t["is_wrapper"] for t in types),
+          "%d types" % len(types))
+
+    es = c.result("enum.set", name="McpEnum", size=4, flags=False,
+                  values={"Zero": 0, "One": 1, "Two": 2})
+    check("enum.set", es["ok"] is True, "created=%s" % es["created"])
+
+    tree = c.result("class.get", **{"class": "McpTest"})
+    hex_index = next(i for i, k in enumerate(tree["children"])
+                     if k["type"] == "Hex64")
+    ne = {"class": "McpTest", "path": [hex_index]}
+    c.result("node.change_type", node=ne, type="Enum")
+    c.result("node.set_enum", node=ne, **{"enum": "McpEnum"})
+    enum_node = c.result("node.get", node=ne)
+    check("node.set_enum", enum_node["class_ref"] == "McpEnum",
+          "value=%s" % (enum_node["value"],))
+
+    enums = c.result("enum.list")
+    mcp_enum = next((e for e in enums if e["name"] == "McpEnum"), None)
+    check("enum.list", mcp_enum is not None and mcp_enum["size"] == 4
+          and mcp_enum["values"].get("One") == "1",
+          json.dumps(mcp_enum))
+
+    before = len(c.result("class.get", **{"class": "McpTest"})["children"])
+    c.result("node.remove", node={"class": "McpTest", "path": [before - 1]})
+    after_count = len(c.result("class.get", **{"class": "McpTest"})["children"])
+    check("node.remove", after_count == before - 1,
+          "%d -> %d" % (before, after_count))
+
+    size_before = c.result("class.get", **{"class": "McpTest"})["size"]
+    c.result("class.add_bytes", **{"class": "McpTest", "size": 16})
+    size_after = c.result("class.get", **{"class": "McpTest"})["size"]
+    check("class.add_bytes", size_after == size_before + 16,
+          "%d -> %d" % (size_before, size_after))
+
+    cpp = c.result("codegen.generate", language="cpp")["code"]
+    check("codegen.generate cpp", "class McpTest" in cpp,
+          "%d chars" % len(cpp))
+
+    cs = c.result("codegen.generate", language="csharp")["code"]
+    check("codegen.generate csharp",
+          "McpTest" in cs and "struct" in cs or "class McpTest" in cs,
+          "%d chars" % len(cs))
+
+    saved = c.result("project.save", path=project_path)
+    check("project.save", os.path.exists(saved["path"]),
+          "%s (%d bytes)" % (saved["path"], os.path.getsize(saved["path"])))
+
+    c.result("project.new")
+    check("project.new clears classes",
+          not any(cl["name"] == "McpTest" for cl in c.result("class.list")), "")
+
+    loaded = c.result("project.load", path=project_path)
+    check("project.load",
+          any(cl["name"] == "McpTest" for cl in loaded["classes"]),
+          "%d classes" % len(loaded["classes"]))
+    check("class.list after load",
+          any(cl["name"] == "McpTest" for cl in c.result("class.list")), "")
+
+    info = c.result("project.info")
+    check("project.info", info["path"] == project_path
+          and "McpEnum" in info["enums"], json.dumps(info["enums"]))
+
+    referenced = c.call("class.delete", **{"class": "McpOther"})
+    refs = referenced.get("error", {}).get("data", {}).get("references")
+    check("class.delete referenced -> -32005",
+          error_code(referenced) == -32005 and refs == ["McpTest"],
+          "references=%s" % (refs,))
+
+    forced = c.result("class.delete", **{"class": "McpOther", "force": True})
+    check("class.delete force", forced.get("ok") is True,
+          "remaining=%s" % [cl["name"] for cl in c.result("class.list")])
+
+    check("node.get bad path -> -32003",
+          error_code(c.call("node.get",
+                            node={"class": "McpTest", "path": [999]})) == -32003,
+          str(c.call("node.get",
+                     node={"class": "McpTest", "path": [999]}).get("error")))
+
+    check("unknown class -> -32003",
+          error_code(c.call("class.get", **{"class": "NoSuchClass"})) == -32003, "")
+
+    check("unknown node type -> -32002",
+          error_code(c.call("node.change_type",
+                            node={"class": "McpTest", "path": [0]},
+                            type="NotAType")) == -32002,
+          str(c.call("node.change_type",
+                     node={"class": "McpTest", "path": [0]},
+                     type="NotAType").get("error")))
+
+    check("codegen bad language -> -32002",
+          error_code(c.call("codegen.generate", language="rust")) == -32002, "")
+
     detach = c.result("process.detach")
     check("process.detach", detach.get("ok") is True, "")
 

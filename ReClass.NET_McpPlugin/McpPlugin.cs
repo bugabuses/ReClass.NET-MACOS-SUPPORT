@@ -31,10 +31,15 @@ namespace McpPlugin
 				var dispatcher = new RpcDispatcher();
 
 				// Each API group registers its own methods; later chunks add
-				// more groups here (project, nodes, codegen, scanner, analysis).
+				// more groups here (scanner, analysis).
 				new SystemApi().Register(dispatcher);
 				new ProcessApi().Register(dispatcher);
 				new MemoryApi().Register(dispatcher);
+				new ProjectApi().Register(dispatcher);
+				new ClassApi().Register(dispatcher);
+				new NodeApi().Register(dispatcher);
+				new EnumApi().Register(dispatcher);
+				new CodeGenApi().Register(dispatcher);
 
 				var token = Endpoint.GenerateToken();
 
