@@ -51,5 +51,40 @@ if [ ! -f "$XIM_SHIM" ]; then
 	exit 1
 fi
 
+# This script execs mono as root, loading these dylibs into a root process.
+# Refuse to load anything a non-root user in the group or world could have
+# tampered with, either the file itself or its containing directory.
+check_not_writable() {
+	path="$1"
+	for target in "$path" "$(dirname "$path")"; do
+		perm=$(stat -f %Lp "$target" 2>/dev/null) || {
+			echo "cannot stat $target" >&2
+			exit 1
+		}
+		group_digit="${perm: -2:1}"
+		other_digit="${perm: -1:1}"
+		group_bit=$(( 8#$group_digit ))
+		other_bit=$(( 8#$other_digit ))
+		if [ $(( group_bit & 2 )) -ne 0 ] || [ $(( other_bit & 2 )) -ne 0 ]; then
+			echo "refusing to load $path as root: $target is group- or world-writable (mode $perm). Keep the checkout owned by you and not group/world writable." >&2
+			exit 1
+		fi
+	done
+}
+
+check_not_writable "$APP/NativeCore.dylib"
+check_not_writable "$XIM_SHIM"
+check_not_writable "$LOCAL_GDIPLUS"
+
+MONO_BIN="$(command -v mono)"
+if [ -z "$MONO_BIN" ]; then
+	echo "mono not found in PATH" >&2
+	exit 1
+fi
+if ! file "$MONO_BIN" | grep -q arm64; then
+	echo "arm64 mono required (Homebrew /opt/homebrew)" >&2
+	exit 1
+fi
+
 cd "$APP"
-exec sudo -E env DISPLAY="$DISPLAY" DYLD_LIBRARY_PATH="$DYLD_LIBRARY_PATH" DYLD_INSERT_LIBRARIES="$XIM_SHIM" MONO_MWF_MAC_FORCE_X11=1 "$(command -v mono)" ReClass.NET.exe "$@"
+exec sudo -E env DISPLAY="$DISPLAY" DYLD_LIBRARY_PATH="$DYLD_LIBRARY_PATH" DYLD_INSERT_LIBRARIES="$XIM_SHIM" MONO_MWF_MAC_FORCE_X11=1 "$MONO_BIN" ReClass.NET.exe "$@"

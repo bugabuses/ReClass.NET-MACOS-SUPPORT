@@ -5,8 +5,8 @@ STD = -std=c++17
 INC = -I../Dependencies/distorm/include
 DEFS = -DRECLASSNET64=1
 WARN = -Wall -Wno-deprecated-declarations
-CXXFLAGS_COMMON = $(ARCH) $(STD) -fPIC $(WARN) $(DEFS) $(INC)
-CFLAGS_COMMON = $(ARCH) -fPIC -Wall $(DEFS) $(INC)
+CXXFLAGS_COMMON = $(ARCH) $(STD) -fPIC $(WARN) $(DEFS) $(INC) -MMD -MP
+CFLAGS_COMMON = $(ARCH) -fPIC -Wall $(DEFS) $(INC) -MMD -MP
 LDFLAGS = $(ARCH) -dynamiclib -shared -Wl,-undefined,error
 
 SRCS_CPP = WriteRemoteMemory.cpp ReadRemoteMemory.cpp OpenRemoteProcess.cpp IsProcessValid.cpp Input.cpp \
@@ -57,5 +57,7 @@ test: debug test/harness
 
 test/harness: test/harness.cpp
 	$(CXX) $(ARCH) $(STD) -Wall $(DEFS) -o $@ $<
+
+-include $(wildcard obj/*/*.d)
 
 .PHONY: all clean debug release clean_debug clean_release test

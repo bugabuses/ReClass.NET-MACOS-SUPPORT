@@ -146,10 +146,17 @@ int main(int argc, char** argv)
 		CHECK(before == after, "read-only page write preserved value");
 	}
 
-	CloseRemoteProcess(handle);
 	ControlRemoteProcess(handleId, ControlRemoteProcessAction::Terminate);
 	int status = 0; waitpid(child, &status, 0);
 	CHECK(!IsProcessValid(handleId), "child invalid after terminate");
+
+	// pid recycling guard: even though CloseRemoteProcess has not been called
+	// yet, ReadRemoteMemory must not silently keep serving the stale cached
+	// task port for a pid that no longer refers to the same process.
+	uint8_t deadRead[4] = {};
+	CHECK(!ReadRemoteMemory(handle, sleepBase, deadRead, 0, sizeof(deadRead)), "ReadRemoteMemory fails for terminated/reaped pid");
+
+	CloseRemoteProcess(handle);
 
 	std::printf("%s (%d failures)\n", failures ? "FAILED" : "PASSED", failures);
 	return failures ? 1 : 0;

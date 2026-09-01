@@ -48,12 +48,13 @@ namespace
 				continue;
 			}
 			const auto nul = static_cast<const char*>(std::memchr(chunk, 0, sizeof(chunk)));
+			const size_t avail = maxLength - result.size();
 			if (nul != nullptr)
 			{
-				result.append(chunk, nul - chunk);
+				result.append(chunk, std::min<size_t>(nul - chunk, avail));
 				break;
 			}
-			result.append(chunk, sizeof(chunk));
+			result.append(chunk, std::min<size_t>(sizeof(chunk), avail));
 		}
 		return result;
 	}
@@ -243,7 +244,26 @@ namespace
 	}
 }
 
+namespace
+{
+	// Converts a narrow path/name to UTF-16 into out, swallowing invalid-UTF-8
+	// exceptions so one bad string skips only its own entry.
+	bool TryMultiByteToUnicode(const char* str, RC_UnicodeChar* out, int length)
+	{
+		try
+		{
+			MultiByteToUnicode(str, out, length);
+			return true;
+		}
+		catch (...)
+		{
+			return false;
+		}
+	}
+}
+
 extern "C" void RC_CallConv EnumerateRemoteSectionsAndModules(RC_Pointer handle, EnumerateRemoteSectionsCallback callbackSection, EnumerateRemoteModulesCallback callbackModule)
+try
 {
 	if (callbackSection == nullptr && callbackModule == nullptr)
 	{
@@ -290,8 +310,8 @@ extern "C" void RC_CallConv EnumerateRemoteSectionsAndModules(RC_Pointer handle,
 			if (module != nullptr)
 			{
 				section.Type = SectionType::Image;
-				MultiByteToUnicode(module->Path.c_str(), section.ModulePath, PATH_MAXIMUM_LENGTH);
-				MultiByteToUnicode(segment->Name, section.Name, 15);
+				TryMultiByteToUnicode(module->Path.c_str(), section.ModulePath, PATH_MAXIMUM_LENGTH - 1);
+				TryMultiByteToUnicode(segment->Name, section.Name, 15);
 				const bool r = info.protection & VM_PROT_READ;
 				const bool w = info.protection & VM_PROT_WRITE;
 				const bool x = info.protection & VM_PROT_EXECUTE;
@@ -320,8 +340,14 @@ extern "C" void RC_CallConv EnumerateRemoteSectionsAndModules(RC_Pointer handle,
 			EnumerateRemoteModuleData data = {};
 			data.BaseAddress = reinterpret_cast<RC_Pointer>(m.Base);
 			data.Size = static_cast<RC_Size>(m.Size);
-			MultiByteToUnicode(m.Path.c_str(), data.Path, PATH_MAXIMUM_LENGTH);
+			if (!TryMultiByteToUnicode(m.Path.c_str(), data.Path, PATH_MAXIMUM_LENGTH - 1))
+			{
+				continue;
+			}
 			callbackModule(&data);
 		}
 	}
+}
+catch (...)
+{
 }

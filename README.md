@@ -129,6 +129,10 @@ The script runs Mono as root via `sudo` because `task_for_pid` requires it. It w
 
 - Non-fatal X11 `BadFont` and `BadCursor` errors print to stderr.
 
+**Known issues / security**
+
+- `run-macos.sh` loads `NativeCore.dylib`, the XIM shim and `libgdiplus` from the repository checkout as root (via `sudo`). Keep the checkout owned by you and not group- or world-writable; the script refuses to run otherwise.
+
 **Limitations**
 
 - Reading other processes requires root. Even as root, macOS System Integrity Protection prevents attaching to Apple-signed / hardened-runtime processes; third-party apps and games work.

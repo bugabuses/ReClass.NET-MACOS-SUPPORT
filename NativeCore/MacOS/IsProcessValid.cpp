@@ -2,8 +2,17 @@
 #include <signal.h>
 
 #include "NativeCore.hpp"
+#include "TaskPorts.hpp"
 
 extern "C" bool RC_CallConv IsProcessValid(RC_Pointer handle)
 {
-	return kill(static_cast<pid_t>(reinterpret_cast<intptr_t>(handle)), 0) == 0;
+	try
+	{
+		const auto pid = static_cast<pid_t>(reinterpret_cast<intptr_t>(handle));
+		return kill(pid, 0) == 0 && TaskPorts::IsSameProcess(pid);
+	}
+	catch (...)
+	{
+		return false;
+	}
 }
