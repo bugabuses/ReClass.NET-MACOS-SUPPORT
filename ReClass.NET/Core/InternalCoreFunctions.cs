@@ -14,6 +14,7 @@ namespace ReClassNET.Core
 	{
 		private const string CoreFunctionsModuleWindows = "NativeCore.dll";
 		private const string CoreFunctionsModuleUnix = "NativeCore.so";
+		private const string CoreFunctionsModuleMacOS = "NativeCore.dylib";
 
 		private readonly IntPtr handle;
 
@@ -46,7 +47,9 @@ namespace ReClassNET.Core
 
 		public static InternalCoreFunctions Create()
 		{
-			var libraryName = NativeMethods.IsUnix() ? CoreFunctionsModuleUnix : CoreFunctionsModuleWindows;
+			var libraryName = NativeMethods.IsMacOS() ? CoreFunctionsModuleMacOS
+				: NativeMethods.IsUnix() ? CoreFunctionsModuleUnix
+				: CoreFunctionsModuleWindows;
 			var libraryPath = Path.Combine(PathUtil.ExecutableFolderPath, libraryName);
 
 			var handle = NativeMethods.LoadLibrary(libraryPath);
