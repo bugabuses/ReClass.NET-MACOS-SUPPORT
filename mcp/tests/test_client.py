@@ -269,3 +269,26 @@ async def test_reconnect_after_server_drop(tmp_path):
             await server2.stop()
     finally:
         await client.close()
+
+
+@pytest.mark.asyncio
+async def test_large_response_line_over_default_stream_limit(tmp_path):
+    # asyncio.StreamReader's default limit is 64 KiB; a big process.list (or
+    # any other) response line must not overflow it now that RcClient opens
+    # the connection with the plugin's larger transfer cap as the limit.
+    big_value = "x" * (200 * 1024)  # 200 KiB, well over the 64 KiB default.
+
+    def handler(req):
+        return {"jsonrpc": "2.0", "id": req["id"], "result": {"value": big_value}}
+
+    server = await FakeServer(handler=handler).start()
+    endpoint = tmp_path / "endpoint.json"
+    write_endpoint(endpoint, server.port)
+    client = RcClient(endpoint_path=endpoint, timeout=2)
+    try:
+        await client.connect()
+        result = await client.call("process.list")
+        assert result == {"value": big_value}
+    finally:
+        await client.close()
+        await server.stop()

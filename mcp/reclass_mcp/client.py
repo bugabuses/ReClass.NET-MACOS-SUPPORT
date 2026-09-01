@@ -16,6 +16,12 @@ from typing import Any, Iterable
 
 DEFAULT_TIMEOUT = 5.0
 
+# Plugin-side per-call transfer cap is 16 MiB; give StreamReader headroom above
+# that for JSON/base64 framing overhead so a large single line (e.g. a big
+# process.list or memory.read_batch response) does not exceed the default
+# 64 KiB asyncio.StreamReader limit and raise a LimitOverrunError.
+STREAM_LIMIT = 16 * 1024 * 1024 + 1024
+
 
 def _endpoint_path() -> Path:
     override = os.environ.get("RECLASS_MCP_ENDPOINT")
@@ -104,7 +110,7 @@ class RcClient:
         port = endpoint["port"]
         token = endpoint["token"]
 
-        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        reader, writer = await asyncio.open_connection("127.0.0.1", port, limit=STREAM_LIMIT)
         self._reader = reader
         self._writer = writer
 

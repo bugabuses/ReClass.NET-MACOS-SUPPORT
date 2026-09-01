@@ -143,10 +143,16 @@ async def test_class_create_get_node_change_type_codegen_roundtrip(client: RcCli
 
 
 async def test_scan_first_status_results(client: RcClient, attached):
+    # value_type/compare are lowercase, plugin-defined keys (ScannerApi.cs):
+    # value_type in {byte, short, integer/int, long, float, double,
+    # bytes/array_of_bytes, string, regex}; compare in {equal, not_equal,
+    # changed, not_changed, greater_than, greater_than_or_equal, increased,
+    # increased_or_equal, less_than, less_than_or_equal, decreased,
+    # decreased_or_equal, between, between_or_equal, unknown}.
     first = await client.call(
         "scan.first",
-        value_type="Int32",
-        compare="Equal",
+        value_type="integer",
+        compare="equal",
         value=0,
         settings={"start": "0x0", "stop": "0x7fffffffffff", "fast": True},
     )

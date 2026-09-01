@@ -167,7 +167,7 @@ async def memory_read_typed(
     length: Optional[int] = None,
 ) -> str:
     """Read one or more typed values from memory without client-side decoding.
-    `type` is one of: int32, uint64, float, double, bool, utf8, utf16, ptr.
+    `type` is one of: int8, uint8, int16, uint16, int32, uint32, int64, uint64, float, double, bool, ptr, utf8, utf16, utf32.
     `count` repeats the read; `length` bounds text reads.
     Returns JSON: {values: [...]}."""
     params: dict[str, Any] = {"address": address, "type": type, "count": count}
@@ -179,7 +179,7 @@ async def memory_read_typed(
 @mcp.tool()
 async def memory_write_typed(address: Address, type: str, value: Any) -> str:
     """Write one typed value to memory.
-    `type` is one of: int32, uint64, float, double, bool, utf8, utf16, ptr.
+    `type` is one of: int8, uint8, int16, uint16, int32, uint32, int64, uint64, float, double, bool, ptr, utf8, utf16, utf32.
     Returns JSON: {ok}."""
     return _dump(await _invoke("memory.write_typed", address=address, type=type, value=value))
 
@@ -469,8 +469,15 @@ async def scan_first(
     value2: Optional[Any] = None,
     settings: Optional[dict] = None,
 ) -> str:
-    """Start a new memory scan. `value_type` is a ScanValueType name; `compare` is a ScanCompareType name.
-    `value2` is used for between-style comparisons. `settings` may include
+    """Start a new memory scan.
+    `value_type` (case-insensitive): byte, short, integer (or int), long, float,
+    double, bytes (or array_of_bytes), string, regex.
+    `compare` (case-insensitive, underscores optional): equal, not_equal, changed,
+    not_changed, greater_than, greater_than_or_equal, increased, increased_or_equal,
+    less_than, less_than_or_equal, decreased, decreased_or_equal, between,
+    between_or_equal, unknown.
+    `value2` is required for between/between_or_equal (as the upper bound).
+    `settings` may include
     {start, stop, alignment, fast, writable, executable, cow, private, image, mapped}.
     Fails with `busy` if a scan is already running.
     Returns JSON: {job, total?}."""
@@ -485,6 +492,11 @@ async def scan_first(
 @mcp.tool()
 async def scan_next(compare: str, value: Optional[Any] = None, value2: Optional[Any] = None) -> str:
     """Refine the previous scan's results with a new comparison.
+    `compare` (case-insensitive, underscores optional): equal, not_equal, changed,
+    not_changed, greater_than, greater_than_or_equal, increased, increased_or_equal,
+    less_than, less_than_or_equal, decreased, decreased_or_equal, between,
+    between_or_equal, unknown.
+    `value2` is required for between/between_or_equal (as the upper bound).
     Returns JSON: {job}."""
     params: dict[str, Any] = {"compare": compare}
     if value is not None:
@@ -564,18 +576,20 @@ async def analysis_pointer_preview(address: Address, size: int = 64) -> str:
 @mcp.tool()
 async def analysis_disassemble(
     address: Address,
-    length: Optional[int] = 64,
+    length: int = 64,
     max_instructions: Optional[int] = None,
     function: bool = False,
 ) -> str:
-    """Disassemble code at an address. Provide `length` (bytes) or `max_instructions`.
-    Set `function` to disassemble the whole containing function.
+    """Disassemble code at an address.
+    `length` is the number of bytes to fetch and disassemble (also used, as the
+    starting point, when `function` is set). `max_instructions` additionally caps
+    the instruction count when `function` is false (ignored when `function` is
+    true). Set `function` to disassemble the whole containing function instead of
+    a fixed byte range.
     Returns JSON list: [{address, length, bytes_hex, text}]."""
-    params: dict[str, Any] = {"address": address, "function": function}
+    params: dict[str, Any] = {"address": address, "length": length, "function": function}
     if max_instructions is not None:
         params["max_instructions"] = max_instructions
-    elif length is not None:
-        params["length"] = length
     return _dump(await _invoke("analysis.disassemble", **params))
 
 
