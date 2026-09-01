@@ -2,7 +2,7 @@
 """Throwaway smoke client for the ReClass.NET MCP plugin's JSON-RPC server.
 
 Reads ~/.reclass-mcp.json, authenticates and exercises every RPC implemented
-by chunk 1. Requires a running ReClass.NET with the plugin loaded and a
+by chunks 1-3. Requires a running ReClass.NET with the plugin loaded and a
 `sleep 300 &` process to attach to. Prints PASS/FAIL per check.
 
     python3 ReClass.NET_McpPlugin/test/rpc_smoke.py
@@ -14,6 +14,7 @@ import os
 import socket
 import struct
 import sys
+import time
 
 ENDPOINT = os.path.join(os.path.expanduser("~"), ".reclass-mcp.json")
 
@@ -408,6 +409,152 @@ def main():
 
     check("codegen bad language -> -32002",
           error_code(c.call("codegen.generate", language="rust")) == -32002, "")
+
+    # ------------------------------------------------------------------
+    # Chunk 3: scanner / analysis
+    # ------------------------------------------------------------------
+
+    def wait_for_scan(label, timeout=60.0):
+        deadline = time.time() + timeout
+        st = c.result("scan.status")
+        while st["running"] and time.time() < deadline:
+            time.sleep(0.05)
+            st = c.result("scan.status")
+        check("scan.status %s finished" % label, st["running"] is False,
+              "progress=%s total=%s" % (st["progress"], st["total"]))
+        return st
+
+    module_size = int(sleep_module["size"])
+    module_range = {"start": sleep_module["start"],
+                    "stop": hex(base + module_size),
+                    "alignment": 4,
+                    "fast": True,
+                    # The Mach-O header lives in a read-only image section, so
+                    # neither the writable nor the executable filter may exclude
+                    # it. `image` keeps the scan inside the mapped binaries.
+                    "writable": "indeterminate",
+                    "executable": "indeterminate",
+                    "cow": "indeterminate",
+                    "private": True,
+                    "image": True,
+                    "mapped": False}
+
+    # 0xFEEDFACF is the Mach-O 64 bit magic. IntegerMemoryComparer compares
+    # signed 32 bit values; the RPC accepts the unsigned decimal form and casts
+    # it (unchecked) to int, so 4277009103 and -17958193 are equivalent here.
+    started = c.result("scan.first", value_type="integer", compare="equal",
+                       value=4277009103, settings=module_range)
+    check("scan.first", "job" in started, json.dumps(started))
+
+    wait_for_scan("first")
+
+    results = c.result("scan.results", offset=0, limit=1000)
+    addresses = set(int(r["address"], 16) for r in results["results"])
+    check("scan.results contains module base",
+          base in addresses and results["total"] >= 1,
+          "total=%d, %d returned" % (results["total"], len(results["results"])))
+    check("scan.results value typed",
+          all(r["value"] in (-17958193, 0xFEEDFACF) for r in results["results"]),
+          str(results["results"][0]["value"]) if results["results"] else "-")
+
+    c.result("scan.next", compare="equal", value=4277009103)
+    wait_for_scan("next equal")
+    again = c.result("scan.results", offset=0, limit=1000)
+    check("scan.next equal keeps module base",
+          base in set(int(r["address"], 16) for r in again["results"]),
+          "total=%d" % again["total"])
+
+    c.result("scan.next", compare="changed")
+    wait_for_scan("next changed")
+    changed = c.result("scan.results", offset=0, limit=1000)
+    check("scan.next changed narrows results",
+          changed["total"] <= again["total"],
+          "%d -> %d" % (again["total"], changed["total"]))
+
+    undone = c.result("scan.undo")
+    check("scan.undo restores previous count",
+          undone.get("ok") is True and undone["total"] == again["total"],
+          "total=%d (expected %d)" % (undone["total"], again["total"]))
+
+    # A wide, unaligned, non-fast scan over every mapped region takes long
+    # enough that the immediately following scan.first must be rejected.
+    c.result("scan.first", value_type="integer", compare="equal", value=0,
+             settings={"alignment": 1, "fast": False,
+                       "writable": "indeterminate",
+                       "executable": "indeterminate",
+                       "cow": "indeterminate",
+                       "private": True, "image": True, "mapped": True})
+    busy = c.call("scan.first", value_type="integer", compare="equal", value=0)
+    check("scan.first while running -> -32006", error_code(busy) == -32006,
+          str(busy.get("error")))
+
+    check("scan.cancel", c.result("scan.cancel").get("ok") is True, "")
+    wait_for_scan("cancel", timeout=90.0)
+
+    check("scan.reset", c.result("scan.reset").get("ok") is True, "")
+    check("scan.results after reset -> -32003",
+          error_code(c.call("scan.results")) == -32003, "")
+    check("scan.first bad value type -> -32002",
+          error_code(c.call("scan.first", value_type="nope", compare="equal",
+                            value=1)) == -32002, "")
+
+    # --- analysis -----------------------------------------------------
+
+    named = c.result("analysis.named_address", address=base)
+    check("analysis.named_address(sleepBase)",
+          named["name"] is not None and "sleep" in named["name"],
+          repr(named["name"]))
+
+    rtti = c.result("analysis.rtti", address=base)
+    check("analysis.rtti returns", "rtti" in rtti, repr(rtti["rtti"]))
+
+    preview = c.result("analysis.pointer_preview", address=base, size=64)
+    check("analysis.pointer_preview module",
+          preview["module"] is not None and preview["module"]["name"] == "sleep",
+          json.dumps(preview["module"]))
+    check("analysis.pointer_preview data_b64",
+          base64.b64decode(preview["data_b64"])[:4] == b"\xcf\xfa\xed\xfe",
+          base64.b64decode(preview["data_b64"])[:4].hex())
+    check("analysis.pointer_preview guessed",
+          isinstance(preview["guessed"], list) and len(preview["guessed"]) > 0
+          and all("offset" in g and "type" in g for g in preview["guessed"]),
+          "%d entries, first=%s" % (len(preview["guessed"]),
+                                    preview["guessed"][0] if preview["guessed"] else "-"))
+    check("analysis.pointer_preview section",
+          preview["section"] is None or "name" in preview["section"],
+          json.dumps(preview["section"])[:60])
+
+    data_sections = [s for s in c.result("sections.list", module="sleep")
+                     if s["category"] in ("DATA", "HEAP") and int(s["size"]) >= 16]
+    guess_address = int(data_sections[0]["start"], 16) if data_sections else base
+    guessed_node = c.result("analysis.guess", address=guess_address)
+    check("analysis.guess",
+          "type" in guessed_node and "reason" in guessed_node,
+          "type=%s reason=%s" % (guessed_node["type"], guessed_node["reason"]))
+
+    # The attached `sleep` is arm64 on Apple Silicon; the bundled disassembler
+    # is x86 only, so only assert the call succeeds and returns a list.
+    code = c.result("analysis.disassemble", address=base, length=64)
+    check("analysis.disassemble",
+          isinstance(code, list)
+          and all(set(("address", "length", "bytes_hex", "text")) <= set(i)
+                  for i in code),
+          "%d instructions, first=%s" % (len(code), code[0]["text"] if code else "-"))
+
+    func = c.result("analysis.disassemble", address=base, length=64,
+                    function=True)
+    check("analysis.disassemble function=True", isinstance(func, list),
+          "%d instructions" % len(func))
+
+    check("analysis.disassemble bad length -> -32002",
+          error_code(c.call("analysis.disassemble", address=base,
+                            length=0)) == -32002, "")
+
+    dissected = c.result("analysis.dissect", **{"class": "McpTest"})
+    check("analysis.dissect McpTest",
+          isinstance(dissected.get("changed"), list),
+          "%d changed: %s" % (len(dissected["changed"]),
+                              [n["type"] for n in dissected["changed"]]))
 
     detach = c.result("process.detach")
     check("process.detach", detach.get("ok") is True, "")

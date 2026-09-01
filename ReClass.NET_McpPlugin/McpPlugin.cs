@@ -19,6 +19,7 @@ namespace McpPlugin
 		private IPluginHost host;
 		private TcpJsonRpcServer server;
 		private string endpointPath;
+		private ScannerApi scannerApi;
 
 		public override bool Initialize(IPluginHost pluginHost)
 		{
@@ -30,8 +31,7 @@ namespace McpPlugin
 
 				var dispatcher = new RpcDispatcher();
 
-				// Each API group registers its own methods; later chunks add
-				// more groups here (scanner, analysis).
+				// Each API group registers its own methods.
 				new SystemApi().Register(dispatcher);
 				new ProcessApi().Register(dispatcher);
 				new MemoryApi().Register(dispatcher);
@@ -40,6 +40,10 @@ namespace McpPlugin
 				new NodeApi().Register(dispatcher);
 				new EnumApi().Register(dispatcher);
 				new CodeGenApi().Register(dispatcher);
+
+				scannerApi = new ScannerApi();
+				scannerApi.Register(dispatcher);
+				new AnalysisApi().Register(dispatcher);
 
 				var token = Endpoint.GenerateToken();
 
@@ -73,6 +77,16 @@ namespace McpPlugin
 				// ignored
 			}
 			server = null;
+
+			try
+			{
+				scannerApi?.Dispose();
+			}
+			catch (Exception)
+			{
+				// ignored
+			}
+			scannerApi = null;
 
 			Endpoint.Delete();
 
