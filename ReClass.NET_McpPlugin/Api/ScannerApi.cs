@@ -26,13 +26,24 @@ namespace McpPlugin.Api
 		/// <summary>Never return more than this many results in one response.</summary>
 		public const int MaxResultLimit = 10000;
 
+		/// <summary>Serializes the lifecycle operations (start / cancel / dispose).</summary>
+		private readonly object gate = new object();
+
+		/// <summary>Guards the mutable state below; never held while waiting on the worker.</summary>
 		private readonly object sync = new object();
 
 		private Scanner scanner;
 		private CancellationTokenSource cancellation;
+		private System.Threading.Tasks.Task worker;
 		private int progress;
 		private bool running;
 		private int job;
+
+		/// <summary>The message of the exception the last worker failed with, or null.</summary>
+		private string lastError;
+
+		/// <summary>The return value of the last finished <see cref="Scanner.Search"/>, or null.</summary>
+		private bool? lastSuccess;
 
 		public void Register(RpcDispatcher dispatcher)
 		{
@@ -47,17 +58,75 @@ namespace McpPlugin.Api
 
 		public void Dispose()
 		{
-			lock (sync)
+			lock (gate)
 			{
-				DisposeScannerLocked();
+				DisposeScanner();
 			}
 		}
 
-		private void DisposeScannerLocked()
+		/// <summary>
+		/// Cancels the running worker and waits (bounded) for it to finish.
+		/// Must NOT be called while <see cref="sync"/> is held: the worker's
+		/// completion handler takes that lock, so waiting under it would deadlock.
+		/// </summary>
+		private void CancelAndWaitForWorker()
 		{
+			CancellationTokenSource cts;
+			System.Threading.Tasks.Task task;
+			lock (sync)
+			{
+				cts = cancellation;
+				task = worker;
+			}
+
 			try
 			{
-				cancellation?.Cancel();
+				cts?.Cancel();
+			}
+			catch (Exception)
+			{
+				// ignored
+			}
+
+			if (task != null)
+			{
+				try
+				{
+					task.Wait(TimeSpan.FromSeconds(10));
+				}
+				catch (Exception)
+				{
+					// the worker swallows its own errors; a timeout simply means the
+					// scan did not stop in time.
+				}
+			}
+		}
+
+		/// <summary>
+		/// Stops the worker and disposes the scanner. Callers hold
+		/// <see cref="gate"/>, never <see cref="sync"/>, so that the bounded wait
+		/// inside cannot deadlock against the worker's completion handler.
+		/// </summary>
+		private void DisposeScanner()
+		{
+			CancelAndWaitForWorker();
+
+			Scanner oldScanner;
+			CancellationTokenSource oldCancellation;
+			lock (sync)
+			{
+				oldScanner = scanner;
+				oldCancellation = cancellation;
+				scanner = null;
+				cancellation = null;
+				worker = null;
+				running = false;
+				progress = 0;
+			}
+
+			try
+			{
+				oldScanner?.Dispose();
 			}
 			catch (Exception)
 			{
@@ -66,18 +135,12 @@ namespace McpPlugin.Api
 
 			try
 			{
-				scanner?.Dispose();
+				oldCancellation?.Dispose();
 			}
 			catch (Exception)
 			{
 				// ignored
 			}
-
-			cancellation?.Dispose();
-			cancellation = null;
-			scanner = null;
-			running = false;
-			progress = 0;
 		}
 
 		// ------------------------------------------------------------------
@@ -105,7 +168,7 @@ namespace McpPlugin.Api
 			{
 				return valueType;
 			}
-			throw RpcException.BadAddress($"unknown value type '{name}', expected one of {string.Join(", ", ValueTypes.Keys)}");
+			throw RpcException.BadArgument($"unknown value type '{name}', expected one of {string.Join(", ", ValueTypes.Keys)}");
 		}
 
 		private static ScanCompareType ParseCompareType(string name)
@@ -118,7 +181,50 @@ namespace McpPlugin.Api
 					return value;
 				}
 			}
-			throw RpcException.BadAddress($"unknown compare type '{name}'");
+			throw RpcException.BadArgument($"unknown compare type '{name}'");
+		}
+
+		/// <summary>The compare types which need the value of the previous scan.</summary>
+		private static readonly HashSet<ScanCompareType> PreviousValueCompares = new HashSet<ScanCompareType>
+		{
+			ScanCompareType.Changed,
+			ScanCompareType.NotChanged,
+			ScanCompareType.Increased,
+			ScanCompareType.IncreasedOrEqual,
+			ScanCompareType.Decreased,
+			ScanCompareType.DecreasedOrEqual
+		};
+
+		/// <summary>
+		/// Rejects the compare types the scanner cannot serve, up front, so that a
+		/// bad request fails with <c>-32002</c> instead of being reported as a scan
+		/// which found nothing:
+		/// <list type="bullet">
+		/// <item>a first scan has no previous value, so <c>changed</c>,
+		/// <c>not_changed</c>, <c>increased</c>, <c>increased_or_equal</c>,
+		/// <c>decreased</c> and <c>decreased_or_equal</c> need a <c>scan.next</c>;</item>
+		/// <item><c>bytes</c>, <c>string</c> and <c>regex</c> comparers implement
+		/// equality only.</item>
+		/// </list>
+		/// </summary>
+		private static void ValidateCompare(ScanValueType valueType, ScanCompareType compareType, bool isFirstScan)
+		{
+			if (isFirstScan && PreviousValueCompares.Contains(compareType))
+			{
+				throw RpcException.BadArgument($"compare type '{compareType}' needs a previous scan, use scan.next");
+			}
+
+			switch (valueType)
+			{
+				case ScanValueType.ArrayOfBytes:
+				case ScanValueType.String:
+				case ScanValueType.Regex:
+					if (compareType != ScanCompareType.Equal)
+					{
+						throw RpcException.BadArgument($"value type '{valueType}' only supports the 'equal' compare type");
+					}
+					break;
+			}
 		}
 
 		/// <summary>Reads a tri-state setting: <c>"yes"|"no"|"indeterminate"</c> or a bool.</summary>
@@ -148,7 +254,7 @@ namespace McpPlugin.Api
 				case "any":
 					return SettingState.Indeterminate;
 				default:
-					throw RpcException.BadAddress($"'{name}' must be \"yes\", \"no\" or \"indeterminate\"");
+					throw RpcException.BadArgument($"'{name}' must be \"yes\", \"no\" or \"indeterminate\"");
 			}
 		}
 
@@ -177,7 +283,7 @@ namespace McpPlugin.Api
 				var alignment = Params.Get<int>(s, "alignment");
 				if (alignment < 1)
 				{
-					throw RpcException.BadAddress("'alignment' must be at least 1");
+					throw RpcException.BadArgument("'alignment' must be at least 1");
 				}
 				settings.FastScanAlignment = alignment;
 			}
@@ -191,9 +297,11 @@ namespace McpPlugin.Api
 			settings.ScanExecutableMemory = ParseSettingState(s, "executable", settings.ScanExecutableMemory);
 			settings.ScanCopyOnWriteMemory = ParseSettingState(s, "cow", settings.ScanCopyOnWriteMemory);
 
-			if (settings.StopAddress.ToInt64() <= settings.StartAddress.ToInt64())
+			// Addresses are unsigned: on 64 bit a kernel-space address has the sign
+			// bit set and would compare as "less than" a user-space one.
+			if ((ulong)settings.StopAddress.ToInt64() <= (ulong)settings.StartAddress.ToInt64())
 			{
-				throw RpcException.BadAddress("'stop' must be greater than 'start'");
+				throw RpcException.BadArgument("'stop' must be greater than 'start'");
 			}
 
 			return settings;
@@ -212,12 +320,17 @@ namespace McpPlugin.Api
 
 				if (text.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
 				{
+					// A sign in front of a hex literal is ambiguous (is 0x… already the
+					// two's complement form?), so it is rejected instead of guessed.
+					if (negative)
+					{
+						throw RpcException.BadArgument($"'{name}' must not combine a sign with a hex literal");
+					}
 					if (!ulong.TryParse(text.Substring(2), NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var hex))
 					{
-						throw RpcException.BadAddress($"'{name}' is not a valid integer");
+						throw RpcException.BadArgument($"'{name}' is not a valid integer");
 					}
-					var signed = unchecked((long)hex);
-					return negative ? -signed : signed;
+					return unchecked((long)hex);
 				}
 
 				if (!long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
@@ -227,7 +340,7 @@ namespace McpPlugin.Api
 					{
 						return unchecked((long)unsigned);
 					}
-					throw RpcException.BadAddress($"'{name}' is not a valid integer");
+					throw RpcException.BadArgument($"'{name}' is not a valid integer");
 				}
 				return negative ? -parsed : parsed;
 			}
@@ -247,7 +360,7 @@ namespace McpPlugin.Api
 			}
 			catch (Exception)
 			{
-				throw RpcException.BadAddress($"'{name}' is not a valid integer");
+				throw RpcException.BadArgument($"'{name}' is not a valid integer");
 			}
 		}
 
@@ -257,7 +370,7 @@ namespace McpPlugin.Api
 			{
 				if (!double.TryParse(text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var parsed))
 				{
-					throw RpcException.BadAddress($"'{name}' is not a valid number");
+					throw RpcException.BadArgument($"'{name}' is not a valid number");
 				}
 				return parsed;
 			}
@@ -268,7 +381,7 @@ namespace McpPlugin.Api
 			}
 			catch (Exception)
 			{
-				throw RpcException.BadAddress($"'{name}' is not a valid number");
+				throw RpcException.BadArgument($"'{name}' is not a valid number");
 			}
 		}
 
@@ -285,7 +398,7 @@ namespace McpPlugin.Api
 				case "utf32":
 					return Encoding.UTF32;
 				default:
-					throw RpcException.BadAddress("'encoding' must be utf8, utf16 or utf32");
+					throw RpcException.BadArgument("'encoding' must be utf8, utf16 or utf32");
 			}
 		}
 
@@ -330,7 +443,7 @@ namespace McpPlugin.Api
 					}
 					else if (needsSecondValue)
 					{
-						throw RpcException.BadAddress($"compare type '{compareType}' requires 'value2'");
+						throw RpcException.BadArgument($"compare type '{compareType}' requires 'value2'");
 					}
 
 					if (needsSecondValue && value1 > value2)
@@ -368,7 +481,7 @@ namespace McpPlugin.Api
 					}
 					else if (needsSecondValue)
 					{
-						throw RpcException.BadAddress($"compare type '{compareType}' requires 'value2'");
+						throw RpcException.BadArgument($"compare type '{compareType}' requires 'value2'");
 					}
 
 					if (needsSecondValue && value1 > value2)
@@ -378,11 +491,27 @@ namespace McpPlugin.Api
 						value2 = temp;
 					}
 
-					// The form derives the significant digits from the typed
-					// text; over the RPC we compare on the full precision of the
-					// given number instead (ScanRoundMode.Normal, 6 digits).
+					// 'significant_digits' defaults the way ScannerForm does it: from
+					// the number of decimal places of the literal the caller supplied
+					// (the larger of 'value' and 'value2'). An integer literal such as
+					// "42" or 42 carries no decimals, so 3 digits are used there rather
+					// than an exact-equality compare. An explicit value must be 0..15,
+					// the range in which a double can carry significant digits.
 					var roundMode = ParseRoundMode(Params.GetOptional(p, "round", "normal"));
-					var digits = Params.GetOptional(p, "significant_digits", 6);
+
+					var defaultDigits = Math.Max(
+						CountDecimals(Params.Has(p, "value") ? p["value"] : null),
+						CountDecimals(Params.Has(p, "value2") ? p["value2"] : null));
+					if (defaultDigits == 0)
+					{
+						defaultDigits = 3;
+					}
+
+					var digits = Params.GetOptional(p, "significant_digits", defaultDigits);
+					if (digits < 0 || digits > 15)
+					{
+						throw RpcException.BadArgument("'significant_digits' must be between 0 and 15");
+					}
 
 					return valueType == ScanValueType.Float
 						? (IScanComparer)new FloatMemoryComparer(compareType, roundMode, digits, (float)value1, (float)value2, bitConverter)
@@ -398,7 +527,7 @@ namespace McpPlugin.Api
 					}
 					catch (Exception ex)
 					{
-						throw RpcException.BadAddress($"'value' is not a valid byte pattern: {ex.Message}");
+						throw RpcException.BadArgument($"'value' is not a valid byte pattern: {ex.Message}");
 					}
 				}
 
@@ -407,7 +536,7 @@ namespace McpPlugin.Api
 					var value = Params.Get<string>(p, "value");
 					if (string.IsNullOrEmpty(value))
 					{
-						throw RpcException.BadAddress("'value' must not be empty");
+						throw RpcException.BadArgument("'value' must not be empty");
 					}
 					return new StringMemoryComparer(value, ParseEncoding(p), Params.GetOptional(p, "case_sensitive", true));
 				}
@@ -417,7 +546,7 @@ namespace McpPlugin.Api
 					var value = Params.Get<string>(p, "value");
 					if (string.IsNullOrEmpty(value))
 					{
-						throw RpcException.BadAddress("'value' must not be empty");
+						throw RpcException.BadArgument("'value' must not be empty");
 					}
 					try
 					{
@@ -425,10 +554,48 @@ namespace McpPlugin.Api
 					}
 					catch (ArgumentException ex)
 					{
-						throw RpcException.BadAddress($"'value' is not a valid regular expression: {ex.Message}");
+						throw RpcException.BadArgument($"'value' is not a valid regular expression: {ex.Message}");
 					}
 				}
 			}
+		}
+
+		/// <summary>
+		/// The number of decimal places of a supplied numeric literal, mirroring
+		/// <c>ScannerForm.CalculateSignificantDigits</c>. Numbers which arrived as
+		/// JSON numbers are rendered round-trip first, so 1.25 still counts as two.
+		/// </summary>
+		private static int CountDecimals(object value)
+		{
+			if (value == null)
+			{
+				return 0;
+			}
+
+			string text;
+			switch (value)
+			{
+				case string s:
+					text = s.Trim();
+					break;
+				case double d:
+					text = d.ToString("R", CultureInfo.InvariantCulture);
+					break;
+				case float f:
+					text = f.ToString("R", CultureInfo.InvariantCulture);
+					break;
+				default:
+					text = System.Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
+					break;
+			}
+
+			var index = text.IndexOf('.');
+			if (index < 0 || text.IndexOf('E') >= 0 || text.IndexOf('e') >= 0)
+			{
+				return 0;
+			}
+
+			return text.Length - 1 - index;
 		}
 
 		private static ScanRoundMode ParseRoundMode(string name)
@@ -443,7 +610,7 @@ namespace McpPlugin.Api
 				case "truncate":
 					return ScanRoundMode.Truncate;
 				default:
-					throw RpcException.BadAddress("'round' must be strict, normal or truncate");
+					throw RpcException.BadArgument("'round' must be strict, normal or truncate");
 			}
 		}
 
@@ -457,21 +624,31 @@ namespace McpPlugin.Api
 
 			var valueType = ParseValueType(Params.Get<string>(p, "value_type"));
 			var compareType = ParseCompareType(Params.Get<string>(p, "compare"));
+			ValidateCompare(valueType, compareType, true);
 			var settings = BuildSettings(p, valueType);
 			var comparer = CreateComparer(p, valueType, compareType);
 
-			lock (sync)
+			lock (gate)
 			{
-				if (running)
+				lock (sync)
 				{
-					throw RpcException.Busy("a scan is already running");
+					if (running)
+					{
+						throw RpcException.Busy("a scan is already running");
+					}
 				}
 
-				DisposeScannerLocked();
+				// Waits for a finished-but-not-yet-collected worker before the old
+				// scanner is disposed under it.
+				DisposeScanner();
 
-				scanner = new Scanner(Program.RemoteProcess, settings);
+				var created = new Scanner(Program.RemoteProcess, settings);
+				lock (sync)
+				{
+					scanner = created;
+				}
 
-				return StartLocked(comparer);
+				return Start(comparer);
 			}
 		}
 
@@ -479,45 +656,64 @@ namespace McpPlugin.Api
 		{
 			MemoryApi.RequireProcess();
 
-			lock (sync)
+			lock (gate)
 			{
-				if (running)
+				ScanValueType valueType;
+				lock (sync)
 				{
-					throw RpcException.Busy("a scan is already running");
-				}
-				if (scanner == null)
-				{
-					throw RpcException.NotFound("no scan is active, call scan.first first");
+					if (running)
+					{
+						throw RpcException.Busy("a scan is already running");
+					}
+					if (scanner == null)
+					{
+						throw RpcException.NotFound("no scan is active, call scan.first first");
+					}
+					valueType = scanner.Settings.ValueType;
 				}
 
 				var compareType = ParseCompareType(Params.Get<string>(p, "compare"));
-				var comparer = CreateComparer(p, scanner.Settings.ValueType, compareType);
+				ValidateCompare(valueType, compareType, false);
+				var comparer = CreateComparer(p, valueType, compareType);
 
-				return StartLocked(comparer);
+				return Start(comparer);
 			}
 		}
 
-		/// <summary>Starts the search on a worker. Must be called under <see cref="sync"/>.</summary>
-		private object StartLocked(IScanComparer comparer)
+		/// <summary>
+		/// Starts the search on a worker. Called with <see cref="gate"/> held and a
+		/// non-null, idle <see cref="scanner"/>.
+		/// </summary>
+		private object Start(IScanComparer comparer)
 		{
-			cancellation?.Dispose();
-			cancellation = new CancellationTokenSource();
+			int current;
+			CancellationToken token;
+			Scanner currentScanner;
 
-			progress = 0;
-			running = true;
-			var current = ++job;
+			lock (sync)
+			{
+				cancellation?.Dispose();
+				cancellation = new CancellationTokenSource();
 
-			var token = cancellation.Token;
-			var currentScanner = scanner;
+				progress = 0;
+				running = true;
+				lastError = null;
+				lastSuccess = null;
+				current = ++job;
+				token = cancellation.Token;
+				currentScanner = scanner;
+			}
 
 			// Scanner.Search itself dispatches the work to a task; awaiting the
 			// returned task on a worker keeps the RPC thread free and lets us
 			// clear the running flag when it finishes, faults or is cancelled.
-			System.Threading.Tasks.Task.Run(async () =>
+			var task = System.Threading.Tasks.Task.Run(async () =>
 			{
+				bool? success = null;
+				string error = null;
 				try
 				{
-					await currentScanner.Search(comparer, new Progress<int>(value =>
+					success = await currentScanner.Search(comparer, new Progress<int>(value =>
 					{
 						lock (sync)
 						{
@@ -525,10 +721,24 @@ namespace McpPlugin.Api
 						}
 					}), token).ConfigureAwait(false);
 				}
-				catch (Exception)
+				catch (OperationCanceledException)
 				{
-					// A cancelled or failed scan simply ends the job; the error
-					// surfaces as an unchanged result count.
+					// a cancelled scan is not an error
+				}
+				catch (Exception ex)
+				{
+					// Without this the failure would be indistinguishable from a scan
+					// which simply found nothing, so it is logged and reported by
+					// scan.status as 'error'.
+					error = ex.Message;
+					try
+					{
+						Program.Logger?.Log(ex);
+					}
+					catch (Exception)
+					{
+						// ignored
+					}
 				}
 				finally
 				{
@@ -538,14 +748,32 @@ namespace McpPlugin.Api
 						{
 							running = false;
 							progress = 100;
+							lastError = error;
+							lastSuccess = success;
 						}
 					}
 				}
 			});
 
+			lock (sync)
+			{
+				if (job == current)
+				{
+					worker = task;
+				}
+			}
+
 			return new Dictionary<string, object> { { "job", current } };
 		}
 
+		/// <summary>
+		/// The scan state. <c>total</c> is null while a scan runs — the result
+		/// store is rebuilt by the worker and must not be counted from here — and
+		/// is read under the same lock as <c>progress</c> once it has finished.
+		/// <c>error</c> carries the message of the exception the last worker died
+		/// with (null when it succeeded or was cancelled) and <c>success</c> the
+		/// return value of <c>Scanner.Search</c> (null while running / cancelled).
+		/// </summary>
 		private object Status(Dictionary<string, object> p)
 		{
 			lock (sync)
@@ -554,7 +782,9 @@ namespace McpPlugin.Api
 				{
 					{ "running", running },
 					{ "progress", progress },
-					{ "total", scanner?.TotalResultCount ?? 0 },
+					{ "total", running ? null : (object)(scanner?.TotalResultCount ?? 0) },
+					{ "error", lastError },
+					{ "success", lastSuccess },
 					{ "job", job }
 				};
 			}
@@ -567,11 +797,11 @@ namespace McpPlugin.Api
 
 			if (offset < 0)
 			{
-				throw RpcException.BadAddress("'offset' must not be negative");
+				throw RpcException.BadArgument("'offset' must not be negative");
 			}
 			if (limit < 0 || limit > MaxResultLimit)
 			{
-				throw RpcException.BadAddress($"'limit' must be between 0 and {MaxResultLimit}");
+				throw RpcException.BadArgument($"'limit' must be between 0 and {MaxResultLimit}");
 			}
 
 			lock (sync)
@@ -579,6 +809,12 @@ namespace McpPlugin.Api
 				if (scanner == null)
 				{
 					throw RpcException.NotFound("no scan is active, call scan.first first");
+				}
+				if (running)
+				{
+					// The worker rewrites the result store as it goes; enumerating it
+					// here would race with it.
+					throw RpcException.Busy("a scan is running");
 				}
 
 				var results = scanner.GetResults()
@@ -643,7 +879,7 @@ namespace McpPlugin.Api
 				}
 				if (!scanner.CanUndoLastScan)
 				{
-					throw RpcException.BadAddress("there is no scan to undo");
+					throw RpcException.BadArgument("there is no scan to undo");
 				}
 
 				scanner.UndoLastScan();
@@ -656,31 +892,45 @@ namespace McpPlugin.Api
 			}
 		}
 
+		/// <summary>
+		/// Cancels the running scan and waits (bounded) for the worker to stop, so
+		/// that the scanner is idle when this returns. <c>was_running</c> tells the
+		/// caller whether there was anything to cancel.
+		/// </summary>
 		private object Cancel(Dictionary<string, object> p)
 		{
-			lock (sync)
+			lock (gate)
 			{
-				try
+				bool wasRunning;
+				lock (sync)
 				{
-					cancellation?.Cancel();
+					wasRunning = running;
 				}
-				catch (Exception)
-				{
-					// ignored
-				}
-			}
 
-			return ProcessApi.Ok();
+				CancelAndWaitForWorker();
+
+				return new Dictionary<string, object>
+				{
+					{ "ok", true },
+					{ "was_running", wasRunning }
+				};
+			}
 		}
 
 		private object Reset(Dictionary<string, object> p)
 		{
-			lock (sync)
+			lock (gate)
 			{
-				DisposeScannerLocked();
+				DisposeScanner();
 			}
 
-			return ProcessApi.Ok();
+			lock (sync)
+			{
+				lastError = null;
+				lastSuccess = null;
+			}
+
+			return Json.Ok();
 		}
 	}
 }

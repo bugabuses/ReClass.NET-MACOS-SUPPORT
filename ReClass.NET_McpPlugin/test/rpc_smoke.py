@@ -612,9 +612,11 @@ def main():
     c.result("scan.next", compare="changed")
     wait_for_scan("next changed")
     changed = c.result("scan.results", offset=0, limit=1000)
-    check("scan.next changed narrows results",
-          changed["total"] <= again["total"],
-          "%d -> %d" % (again["total"], changed["total"]))
+    # The Mach-O header is read-only and does not change, so a `changed` scan
+    # over the previous hits must eliminate all of them.
+    check("scan.next changed narrows results to 0",
+          changed["total"] == 0,
+          "%d -> %d (expected 0)" % (again["total"], changed["total"]))
 
     undone = c.result("scan.undo")
     check("scan.undo restores previous count",
@@ -633,8 +635,31 @@ def main():
     check("scan.first while running -> -32006", error_code(busy) == -32006,
           str(busy.get("error")))
 
-    check("scan.cancel", c.result("scan.cancel").get("ok") is True, "")
-    wait_for_scan("cancel", timeout=90.0)
+    running_results = c.call("scan.results")
+    check("scan.results while running -> -32006",
+          error_code(running_results) == -32006,
+          str(running_results.get("error")))
+    running_undo = c.call("scan.undo")
+    check("scan.undo while running -> -32006",
+          error_code(running_undo) == -32006, str(running_undo.get("error")))
+
+    running_status = c.result("scan.status")
+    check("scan.status total is null while running",
+          running_status["running"] is True and running_status["total"] is None,
+          json.dumps(running_status))
+
+    cancelled = c.result("scan.cancel")
+    # scan.cancel waits for the worker, so the scan is idle when it returns.
+    check("scan.cancel reports was_running",
+          cancelled.get("ok") is True and cancelled.get("was_running") is True,
+          json.dumps(cancelled))
+    st = c.result("scan.status")
+    check("scan.status after cancel", st["running"] is False,
+          "progress=%s total=%s error=%s" % (st["progress"], st["total"],
+                                             st["error"]))
+    idle = c.result("scan.cancel")
+    check("scan.cancel when idle -> was_running false",
+          idle.get("was_running") is False, json.dumps(idle))
 
     check("scan.reset", c.result("scan.reset").get("ok") is True, "")
     check("scan.results after reset -> -32003",
@@ -642,6 +667,29 @@ def main():
     check("scan.first bad value type -> -32002",
           error_code(c.call("scan.first", value_type="nope", compare="equal",
                             value=1)) == -32002, "")
+    # A previous-value compare has nothing to compare against on a first scan,
+    # and the byte/string/regex comparers only implement equality. Both used to
+    # fail inside the worker and looked like a scan which found nothing.
+    prev_first = c.call("scan.first", value_type="integer", compare="changed")
+    check("scan.first integer changed -> -32002",
+          error_code(prev_first) == -32002, str(prev_first.get("error")))
+    bytes_ne = c.call("scan.first", value_type="bytes", compare="not_equal",
+                      value="CF FA ED FE")
+    check("scan.first bytes not_equal -> -32002",
+          error_code(bytes_ne) == -32002, str(bytes_ne.get("error")))
+    bad_digits = c.call("scan.first", value_type="float", compare="equal",
+                        value=1.5, significant_digits=99)
+    check("scan.first significant_digits 99 -> -32002",
+          error_code(bad_digits) == -32002, str(bad_digits.get("error")))
+    bad_range = c.call("scan.first", value_type="integer", compare="equal",
+                       value=1,
+                       settings={"start": hex(base + 0x1000), "stop": hex(base)})
+    check("scan.first stop <= start -> -32002",
+          error_code(bad_range) == -32002, str(bad_range.get("error")))
+    signed_hex = c.call("scan.first", value_type="integer", compare="equal",
+                        value="-0x10")
+    check("scan.first signed hex -> -32002",
+          error_code(signed_hex) == -32002, str(signed_hex.get("error")))
 
     # --- analysis -----------------------------------------------------
 

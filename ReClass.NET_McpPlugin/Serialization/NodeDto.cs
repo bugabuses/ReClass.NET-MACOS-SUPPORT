@@ -178,6 +178,36 @@ namespace McpPlugin.Serialization
 		/// </summary>
 		public static MemoryBuffer CreateMemoryFor(BaseNode node)
 		{
+			var total = OffsetInClass(node);
+			if (total == null)
+			{
+				return null;
+			}
+
+			if (!(RootOf(node) is ClassNode rootClass))
+			{
+				return null;
+			}
+
+			var memory = CreateMemory(rootClass);
+
+			// ToDto adds node.Offset itself, so the buffer is based at the
+			// node's frame origin, not at the node.
+			return Shift(memory, total.Value - node.Offset);
+		}
+
+		/// <summary>
+		/// The offset of a node relative to the start of its enclosing class,
+		/// summing the container-relative <c>Offset</c> of every node on the way up
+		/// the <c>ParentNode</c> chain. Wrapper hops (an array's or a pointer's
+		/// inner node) report an <c>Offset</c> of 0 and therefore add nothing.
+		///
+		/// Returns null when the chain crosses a <see cref="PointerNode"/> (that
+		/// needs a dereference, not an offset), when the outermost node is not a
+		/// class, or when the parent chain is cyclic.
+		/// </summary>
+		public static int? OffsetInClass(BaseNode node)
+		{
 			if (node == null)
 			{
 				return null;
@@ -202,16 +232,18 @@ namespace McpPlugin.Serialization
 				current = current.ParentNode;
 			}
 
-			if (!(current is ClassNode rootClass))
+			return current is ClassNode ? total : (int?)null;
+		}
+
+		/// <summary>The outermost node of a <c>ParentNode</c> chain.</summary>
+		private static BaseNode RootOf(BaseNode node)
+		{
+			var current = node;
+			for (var guard = 0; current?.ParentNode != null && guard <= 256; ++guard)
 			{
-				return null;
+				current = current.ParentNode;
 			}
-
-			var memory = CreateMemory(rootClass);
-
-			// ToDto adds node.Offset itself, so the buffer is based at the
-			// node's frame origin, not at the node.
-			return Shift(memory, total - node.Offset);
+			return current;
 		}
 
 		/// <summary>The index path of a node relative to its parent class.</summary>

@@ -130,27 +130,34 @@ namespace McpPlugin.Api
 				var container = target as BaseContainerNode ?? target.GetParentContainer();
 				if (container == null)
 				{
-					throw RpcException.BadAddress("the selected node has no container to dissect");
+					throw RpcException.BadArgument("the selected node has no container to dissect");
 				}
 
 				var classNode = container as ClassNode ?? FindClass(container);
 				if (classNode == null)
 				{
-					throw RpcException.BadAddress("the selected node does not belong to a class");
+					throw RpcException.BadArgument("the selected node does not belong to a class");
 				}
 
 				var memory = NodeDto.CreateMemory(classNode);
 				if (memory == null)
 				{
-					throw RpcException.BadAddress($"failed to read the memory of class '{classNode.Name}'");
+					throw RpcException.BadArgument($"failed to read the memory of class '{classNode.Name}'");
 				}
 
-				// Node offsets are relative to their container, so a nested
-				// container needs the buffer shifted by its own offset.
+				// Node offsets are relative to their immediate parent, so a nested
+				// container needs the buffer shifted by the sum of the offsets on the
+				// way up to the class, not just by its own.
 				if (!ReferenceEquals(container, classNode))
 				{
+					var shift = NodeDto.OffsetInClass(container);
+					if (shift == null)
+					{
+						throw RpcException.BadArgument("the selected node lives behind a pointer and has no fixed offset in its class");
+					}
+
 					memory = memory.Clone();
-					memory.Offset += container.Offset;
+					memory.Offset += shift.Value;
 				}
 
 				var hexNodes = container.Nodes.OfType<BaseHexNode>().ToList();
@@ -170,13 +177,14 @@ namespace McpPlugin.Api
 				// The dissector replaces nodes in place, so anything which is no
 				// longer a child of the container at its old offset changed.
 				var changed = new List<object>();
-				var classMemory = NodeDto.CreateMemory(classNode);
 				foreach (var pair in before)
 				{
 					var replacement = container.Nodes.FirstOrDefault(n => n.Offset == pair.Value);
 					if (replacement != null && !ReferenceEquals(replacement, pair.Key))
 					{
-						changed.Add(NodeDto.ToDto(replacement, classMemory, 1, true));
+						// CreateMemoryFor walks the parent chain, so a node inside a
+						// nested container reads its value from the right place.
+						changed.Add(NodeDto.ToDto(replacement, NodeDto.CreateMemoryFor(replacement), 1, true));
 					}
 				}
 
@@ -291,7 +299,7 @@ namespace McpPlugin.Api
 
 			if (size <= 0 || size > MaxPreviewSize)
 			{
-				throw RpcException.BadAddress($"'size' must be between 1 and {MaxPreviewSize}");
+				throw RpcException.BadArgument($"'size' must be between 1 and {MaxPreviewSize}");
 			}
 
 			var data = new byte[size];
@@ -391,11 +399,22 @@ namespace McpPlugin.Api
 
 			var address = Params.GetAddress(p, "address");
 			var asFunction = Params.GetOptional(p, "function", false);
-			var length = Params.GetOptional(p, "length", 64);
+
+			// A function is disassembled until its end, so the default window is
+			// much wider than the 64 bytes a plain code dump defaults to.
+			var length = Params.GetOptional(p, "length", asFunction ? 4096 : 64);
 
 			if (length <= 0 || length > MaxDisassembleLength)
 			{
-				throw RpcException.BadAddress($"'length' must be between 1 and {MaxDisassembleLength}");
+				throw RpcException.BadArgument($"'length' must be between 1 and {MaxDisassembleLength}");
+			}
+
+			// 'max_instructions' is honoured on both paths: the function
+			// disassembler has no such parameter, so its output is truncated here.
+			var maxInstructions = Params.GetOptional(p, "max_instructions", MaxInstructions);
+			if (maxInstructions <= 0 || maxInstructions > MaxInstructions)
+			{
+				throw RpcException.BadArgument($"'max_instructions' must be between 1 and {MaxInstructions}");
 			}
 
 			IReadOnlyList<DisassembledInstruction> instructions;
@@ -405,16 +424,11 @@ namespace McpPlugin.Api
 			}
 			else
 			{
-				var maxInstructions = Params.GetOptional(p, "max_instructions", MaxInstructions);
-				if (maxInstructions <= 0 || maxInstructions > MaxInstructions)
-				{
-					throw RpcException.BadAddress($"'max_instructions' must be between 1 and {MaxInstructions}");
-				}
-
 				instructions = disassembler.Value.RemoteDisassembleCode(Process, address, length, maxInstructions);
 			}
 
 			return (instructions ?? new List<DisassembledInstruction>())
+				.Take(maxInstructions)
 				.Select(i => (object)new Dictionary<string, object>
 				{
 					{ "address", Json.Address(i.Address) },
