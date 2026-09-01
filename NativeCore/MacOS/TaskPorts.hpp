@@ -3,7 +3,7 @@
 #include <mach/mach.h>
 #include <sys/types.h>
 
-#include "NativeCore.hpp"
+#include "../ReClassNET_Plugin.hpp"
 
 namespace TaskPorts
 {

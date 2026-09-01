@@ -9,6 +9,7 @@ extern "C" void RC_CallConv ControlRemoteProcess(RC_Pointer handle, ControlRemot
 	if (action == ControlRemoteProcessAction::Terminate)
 	{
 		kill(pid, SIGKILL);
+		TaskPorts::Release(pid);
 		return;
 	}
 

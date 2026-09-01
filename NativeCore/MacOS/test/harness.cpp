@@ -2,7 +2,6 @@
 // Usage: sudo ./test/harness ../build/debug/NativeCore.dylib
 #include <dlfcn.h>
 #include <unistd.h>
-#include <signal.h>
 #include <sys/wait.h>
 #include <cstdio>
 #include <cstdlib>

@@ -54,7 +54,12 @@ namespace TaskPorts
 		}
 
 		std::lock_guard<std::mutex> lock(g_mutex);
-		return g_ports[pid];
+		auto it = g_ports.find(pid);
+		if (it != g_ports.end())
+		{
+			return it->second;
+		}
+		return MACH_PORT_NULL;
 	}
 
 	void Release(pid_t pid)
