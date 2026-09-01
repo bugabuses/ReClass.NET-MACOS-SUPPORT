@@ -118,10 +118,18 @@ macos_dist_release:
 	cp -r Dependencies/x64/* build/Release/x64/ 2>/dev/null || true
 	cp bin/Release/Plugins/McpPlugin.dll build/Release/x64/Plugins/
 
+# Runs the plugin's live RPC smoke test and the Python bridge's test suite
+# (unit + integration). REQUIRES THE APP RUNNING: start ReClass.NET with the
+# MCP plugin loaded (./run-macos.sh) and a `sleep 300 &` to attach to first,
+# otherwise both halves fail/skip.
+macos_mcp_test:
+	python3 ReClass.NET_McpPlugin/test/rpc_smoke.py
+	cd mcp && uv run pytest -q
+
 macos: macos_release
 
 macos_clean:
 	rm -rf ReClass.NET/bin ReClass.NET/obj ReClass.NET_Launcher/bin ReClass.NET_Launcher/obj bin obj build
 	$(MAKE) -C NativeCore/MacOS clean
 
-.PHONY: macos macos_update macos_debug macos_release macos_dist_debug macos_dist_release macos_clean
+.PHONY: macos macos_mcp_test macos_update macos_debug macos_release macos_dist_debug macos_dist_release macos_clean

@@ -37,7 +37,10 @@ namespace McpPlugin.Api
 
 		private object Get(Dictionary<string, object> p)
 		{
-			var depth = Params.GetOptional(p, "depth", 1);
+			// Clamped, not rejected: an unbounded depth on a self-referencing
+			// class would recurse until the stack overflows. The effective
+			// value is reported back as "depth".
+			var depth = NodeDto.ClampDepth(Params.GetOptional(p, "depth", 1));
 			var withValues = Params.GetOptional(p, "with_values", true);
 
 			return UiThread.Invoke(() =>
@@ -46,7 +49,8 @@ namespace McpPlugin.Api
 
 				var memory = withValues ? NodeDto.CreateMemory(classNode) : null;
 
-				var dto = NodeDto.ToDto(classNode, memory, Math.Max(depth, 0), withValues);
+				var dto = NodeDto.ToDto(classNode, memory, depth, withValues);
+				dto["depth"] = depth;
 				dto["address_formula"] = classNode.AddressFormula;
 				dto["uuid"] = classNode.Uuid.ToString();
 				dto["address"] = ResolvedAddress(classNode);

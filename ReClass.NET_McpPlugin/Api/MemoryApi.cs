@@ -79,12 +79,27 @@ namespace McpPlugin.Api
 			};
 		}
 
-		/// <summary>Reads several ranges; unreadable ranges yield <c>data_b64: null</c> instead of an error.</summary>
+		/// <summary>Largest number of ranges a single <c>memory.read_batch</c> may ask for.</summary>
+		public const int MaxBatchReads = 4096;
+
+		/// <summary>
+		/// Reads several ranges; unreadable ranges yield <c>data_b64: null</c>
+		/// instead of an error. The entry count and the summed size are capped
+		/// (<see cref="MaxBatchReads"/> / <see cref="MaxTransferSize"/>) so one
+		/// request cannot make the plugin allocate unbounded memory.
+		/// </summary>
 		private object ReadBatch(Dictionary<string, object> p)
 		{
 			RequireProcess();
 
 			var reads = Params.GetList(p, "reads");
+
+			if (reads.Count > MaxBatchReads)
+			{
+				throw RpcException.BadArgument($"'reads' has {reads.Count} entries, the limit is {MaxBatchReads}");
+			}
+
+			var totalSize = 0L;
 
 			var results = new List<object>(reads.Count);
 			foreach (var item in reads)
@@ -92,6 +107,12 @@ namespace McpPlugin.Api
 				var entry = Params.AsObject(item, "reads[]");
 				var address = Params.GetAddress(entry, "address");
 				var size = RequireSize(entry, "size");
+
+				totalSize += size;
+				if (totalSize > MaxTransferSize)
+				{
+					throw RpcException.BadArgument($"the sizes in 'reads' sum to more than {MaxTransferSize} bytes");
+				}
 
 				var buffer = new byte[size];
 				var ok = size == 0 || Process.ReadRemoteMemoryIntoBuffer(address, ref buffer);
@@ -134,7 +155,7 @@ namespace McpPlugin.Api
 				throw RpcException.BadAddress($"failed to write {data.Length} bytes at {Json.Address(address)}");
 			}
 
-			return ProcessApi.Ok();
+			return Json.Ok();
 		}
 
 		private object ReadTyped(Dictionary<string, object> p)
@@ -189,7 +210,7 @@ namespace McpPlugin.Api
 				throw RpcException.BadAddress($"failed to write {data.Length} bytes at {Json.Address(address)}");
 			}
 
-			return ProcessApi.Ok();
+			return Json.Ok();
 		}
 
 		private object ReadString(Dictionary<string, object> p)

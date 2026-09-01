@@ -272,8 +272,37 @@ namespace McpPlugin.Serialization
 			return path;
 		}
 
+		/// <summary>
+		/// The largest accepted <c>depth</c>. Requests above this are clamped
+		/// silently (see <see cref="ClampDepth"/>): the DTO tree grows
+		/// exponentially with depth, and a self-referencing class would
+		/// otherwise recurse until the stack overflows — which is not
+		/// catchable in .NET and would take the whole application down.
+		/// </summary>
+		public const int MaxDepth = 16;
+
+		/// <summary>Clamps a requested depth into <c>[0, MaxDepth]</c>.</summary>
+		public static int ClampDepth(int depth)
+		{
+			return depth < 0 ? 0 : (depth > MaxDepth ? MaxDepth : depth);
+		}
+
 		public static Dictionary<string, object> ToDto(BaseNode node, MemoryBuffer memory, int depth, bool withValues)
 		{
+			return ToDto(node, memory, ClampDepth(depth), withValues, new HashSet<ClassNode>());
+		}
+
+		/// <summary>
+		/// The recursive worker. <paramref name="path"/> holds the classes
+		/// currently being expanded on the way down; re-entering one of them
+		/// would be a cycle (a class holding a pointer to itself, directly or
+		/// through other classes), so the DTO is emitted with
+		/// <c>"cycle": true</c> and the descent stops there.
+		/// </summary>
+		private static Dictionary<string, object> ToDto(BaseNode node, MemoryBuffer memory, int depth, bool withValues, HashSet<ClassNode> path)
+		{
+			var cycle = node is ClassNode onPath && path.Contains(onPath);
+
 			var dto = new Dictionary<string, object>
 			{
 				{ "type", NodeTypes.ApiName(node.GetType()) },
@@ -287,8 +316,24 @@ namespace McpPlugin.Serialization
 				{ "inner", null },
 				{ "class_ref", null },
 				{ "count", null },
-				{ "children", null }
+				{ "children", null },
+				{ "cycle", cycle }
 			};
+
+			if (cycle)
+			{
+				// A class already on the path: report the reference and stop.
+				dto["class_ref"] = ((ClassNode)node).Name;
+				return dto;
+			}
+
+			var descended = node as ClassNode;
+			if (descended != null)
+			{
+				path.Add(descended);
+			}
+			try
+			{
 
 			if (node is BaseWrapperArrayNode arrayNode)
 			{
@@ -313,10 +358,12 @@ namespace McpPlugin.Serialization
 				if (depth > 0 && wrapper.InnerNode != null)
 				{
 					// A pointer dereferences; its inner node's values would need
-					// a second buffer, so only structure is reported there.
+					// a second buffer, so only structure is reported there. That
+					// also bounds how far memory is followed: never deeper than
+					// the requested (already clamped) depth.
 					var innerMemory = node is PointerNode ? null : Shift(memory, node.Offset);
 
-					dto["inner"] = ToDto(wrapper.InnerNode, innerMemory, depth - 1, withValues);
+					dto["inner"] = ToDto(wrapper.InnerNode, innerMemory, depth - 1, withValues, path);
 				}
 			}
 
@@ -330,11 +377,19 @@ namespace McpPlugin.Serialization
 				var childMemory = node is ClassNode ? memory : Shift(memory, node.Offset);
 
 				dto["children"] = containerNode.Nodes
-					.Select(child => (object)ToDto(child, childMemory, depth - 1, withValues))
+					.Select(child => (object)ToDto(child, childMemory, depth - 1, withValues, path))
 					.ToList();
 			}
 
 			return dto;
+			}
+			finally
+			{
+				if (descended != null)
+				{
+					path.Remove(descended);
+				}
+			}
 		}
 
 		private static object SafeMemorySize(BaseNode node)
@@ -462,9 +517,14 @@ namespace McpPlugin.Serialization
 
 			var match = node.Enum.Values.FirstOrDefault(kv => kv.Value == value);
 
+			// Same convention as Int64/UInt64 nodes: values which do not fit a
+			// JSON double without loss are emitted as decimal strings. Enums of
+			// 1/2/4 bytes always fit, so only 8-byte enums are stringified.
+			var eightBytes = node.Enum.Size == ReClassNET.Project.EnumDescription.UnderlyingTypeSize.EightBytes;
+
 			return new Dictionary<string, object>
 			{
-				{ "value", value },
+				{ "value", eightBytes ? (object)value.ToString(CultureInfo.InvariantCulture) : value },
 				{ "name", match.Key }
 			};
 		}

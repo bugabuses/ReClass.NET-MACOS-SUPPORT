@@ -54,7 +54,29 @@
       the AnyCPU platform, which does not exist there. The root Makefile always
       builds ReClass.NET before this project, so the HintPath resolves.
     -->
-    <Reference Include="ReClass.NET">
+    <!-- Direct csproj builds (the macOS Makefile): xbuild leaves SolutionDir at
+         the project's parent, and ReClass.NET.csproj writes below its own dir. -->
+    <Reference Include="ReClass.NET"
+               Condition="Exists('$(SolutionDir)ReClass.NET\bin\$(Configuration)\x64\ReClass.NET.exe')">
+      <HintPath>$(SolutionDir)ReClass.NET\bin\$(Configuration)\x64\ReClass.NET.exe</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <!-- Solution builds (VS/msbuild on Windows): the output lands in the
+         solution-wide bin\<cfg>\<platform>\ directory instead. -->
+    <Reference Include="ReClass.NET"
+               Condition="!Exists('$(SolutionDir)ReClass.NET\bin\$(Configuration)\x64\ReClass.NET.exe') And Exists('$(SolutionDir)bin\$(Configuration)\x64\ReClass.NET.exe')">
+      <HintPath>$(SolutionDir)bin\$(Configuration)\x64\ReClass.NET.exe</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <Reference Include="ReClass.NET"
+               Condition="!Exists('$(SolutionDir)ReClass.NET\bin\$(Configuration)\x64\ReClass.NET.exe') And !Exists('$(SolutionDir)bin\$(Configuration)\x64\ReClass.NET.exe') And Exists('$(SolutionDir)bin\$(Configuration)\x86\ReClass.NET.exe')">
+      <HintPath>$(SolutionDir)bin\$(Configuration)\x86\ReClass.NET.exe</HintPath>
+      <Private>False</Private>
+    </Reference>
+    <!-- Fallback so the reference still resolves (and the error names the
+         missing file) when nothing has been built yet. -->
+    <Reference Include="ReClass.NET"
+               Condition="!Exists('$(SolutionDir)ReClass.NET\bin\$(Configuration)\x64\ReClass.NET.exe') And !Exists('$(SolutionDir)bin\$(Configuration)\x64\ReClass.NET.exe') And !Exists('$(SolutionDir)bin\$(Configuration)\x86\ReClass.NET.exe')">
       <HintPath>$(SolutionDir)ReClass.NET\bin\$(Configuration)\x64\ReClass.NET.exe</HintPath>
       <Private>False</Private>
     </Reference>

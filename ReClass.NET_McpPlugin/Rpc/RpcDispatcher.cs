@@ -150,7 +150,7 @@ namespace McpPlugin.Rpc
 			}
 			if (ex is ArgumentException || ex is FormatException || ex is OverflowException)
 			{
-				return ErrorResponse(id, RpcException.CodeBadAddress, ex.Message, null);
+				return ErrorResponse(id, RpcException.CodeBadArgument, ex.Message, null);
 			}
 			if (ex is KeyNotFoundException)
 			{

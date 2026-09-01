@@ -55,6 +55,24 @@ you so. Before connecting, it also checks that the `pid` in the endpoint
 file is still alive; a stale file left behind by a closed ReClass.NET
 produces a clear "not running" error instead of a raw connection failure.
 
+## Trust boundary
+
+There is no user model here: the endpoint file `~/.reclass-mcp.json` holds the
+port and the shared token, and **anyone who can read it can drive ReClass.NET
+with ReClass.NET's own privileges**. On macOS that normally means root — the
+app is launched with `sudo` so it can read and write other processes' memory.
+
+Through this bridge that grants, to whoever holds the token: arbitrary read
+*and write* of any process's memory, attaching to and suspending/terminating
+processes, and reading/writing project files anywhere on the filesystem. The
+only protections are that the listener binds `127.0.0.1` (never a routable
+interface) and that the endpoint file is written `0600`.
+
+So: keep the machine single-user and trusted, do not share the token, and do
+not run the plugin on a host where other people (or untrusted code) have a
+local account. Stop ReClass.NET when you are done — `Terminate` deletes the
+endpoint file.
+
 ## Errors
 
 Tool errors from the plugin surface as `<code> <name>: <message>` (see the
@@ -69,7 +87,7 @@ be re-established).
 | Variable | Default | Purpose |
 |---|---|---|
 | `RECLASS_MCP_ENDPOINT` | `~/.reclass-mcp.json` | Path to the endpoint file (useful for multiple instances or non-standard `$HOME`). |
-| `RECLASS_MCP_TIMEOUT` | `5` (seconds) | Per-call RPC timeout. |
+| `RECLASS_MCP_TIMEOUT` | `30` (seconds) | Per-call RPC timeout. A few slow tools (`project_load`, `project_save`, `class_get`, `memory_read`, `analysis_disassemble`) use a fixed 120 s instead. |
 
 ## Development
 

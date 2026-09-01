@@ -47,11 +47,18 @@ namespace McpPlugin.Api
 		{
 			var memory = withValues ? NodeDto.CreateMemoryFor(node) : null;
 
-			return NodeDto.ToDto(node, memory, Math.Max(depth, 0), withValues);
+			depth = NodeDto.ClampDepth(depth);
+
+			var dto = NodeDto.ToDto(node, memory, depth, withValues);
+			dto["depth"] = depth;
+
+			return dto;
 		}
 
 		private object Get(Dictionary<string, object> p)
 		{
+			// Silently clamped to NodeDto.MaxDepth; the effective value comes
+			// back as the DTO's "depth".
 			var depth = Params.GetOptional(p, "depth", 1);
 			var withValues = Params.GetOptional(p, "with_values", true);
 

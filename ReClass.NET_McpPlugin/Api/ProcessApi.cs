@@ -94,7 +94,7 @@ namespace McpPlugin.Api
 		{
 			UiThread.Invoke(() => Process.Close());
 
-			return Ok();
+			return Json.Ok();
 		}
 
 		/// <summary>Runs on the RPC client thread.</summary>
@@ -149,12 +149,7 @@ namespace McpPlugin.Api
 
 			Process.ControlRemoteProcess(parsed);
 
-			return Ok();
-		}
-
-		internal static Dictionary<string, object> Ok()
-		{
-			return new Dictionary<string, object> { { "ok", true } };
+			return Json.Ok();
 		}
 	}
 }

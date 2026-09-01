@@ -26,6 +26,20 @@ namespace McpPlugin.Rpc
 		/// <summary>Maximum number of simultaneously connected clients.</summary>
 		public const int MaxClients = 16;
 
+		/// <summary>
+		/// How long a freshly accepted connection has to send its <c>auth</c>
+		/// line before it is dropped. Keeps an idle (or hostile) socket from
+		/// occupying one of the <see cref="MaxClients"/> slots for free.
+		/// </summary>
+		public const int AuthTimeoutMilliseconds = 5000;
+
+		/// <summary>
+		/// How long an authenticated connection may stay silent before it is
+		/// dropped. The Python bridge keeps one connection for the life of the
+		/// process, so this only reaps genuinely abandoned sockets.
+		/// </summary>
+		public const int IdleTimeoutMilliseconds = 10 * 60 * 1000;
+
 		private readonly RpcDispatcher dispatcher;
 		private readonly string token;
 		private readonly Action<string> log;
@@ -185,6 +199,12 @@ namespace McpPlugin.Rpc
 			{
 				client.NoDelay = true;
 
+				// Unauthenticated connections get a short deadline; the timeout
+				// is widened to the idle timeout once auth succeeds. A blown
+				// deadline surfaces as an IOException out of Stream.Read, which
+				// the catch below turns into a plain disconnect.
+				client.ReceiveTimeout = AuthTimeoutMilliseconds;
+
 				using (var stream = client.GetStream())
 				using (var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" })
 				{
@@ -211,6 +231,8 @@ namespace McpPlugin.Rpc
 							{
 								return;
 							}
+
+							client.ReceiveTimeout = IdleTimeoutMilliseconds;
 							continue;
 						}
 

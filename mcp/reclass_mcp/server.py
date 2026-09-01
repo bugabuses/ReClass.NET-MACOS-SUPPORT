@@ -21,7 +21,11 @@ from typing import Any, Optional, Union
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
-from .client import RcClient, RpcError
+from .client import SLOW_CALL_TIMEOUT, RcClient, RpcError
+
+# Mirrors NodeDto.MaxDepth in the C# plugin: deeper requests are clamped (the
+# plugin clamps too, this just avoids a pointless round-trip of a silly value).
+MAX_DEPTH = 16
 
 mcp = FastMCP("reclass")
 
@@ -56,10 +60,12 @@ def _dump(result: Any) -> str:
     return json.dumps(result, separators=(",", ":"))
 
 
-async def _invoke(method: str, **params: Any) -> Any:
+async def _invoke(method: str, _timeout: float | None = None, **params: Any) -> Any:
+    """Call one plugin RPC. ``_timeout`` overrides the default (30 s) for the
+    slow tools; it is not sent to the plugin."""
     client = _get_client()
     try:
-        return await client.call(method, **params)
+        return await client.call(method, _timeout=_timeout, **params)
     except RpcError as exc:
         name = ERROR_NAMES.get(exc.code, "error")
         raise ToolError(f"{exc.code} {name}: {exc.message}") from exc
@@ -141,7 +147,7 @@ async def process_control(action: str) -> str:
 async def memory_read(address: Address, size: int) -> str:
     """Read `size` bytes from the attached process at `address` (hex string, decimal string, or int).
     Returns JSON: {address, size, data_b64} (base64-encoded bytes)."""
-    return _dump(await _invoke("memory.read", address=address, size=size))
+    return _dump(await _invoke("memory.read", _timeout=SLOW_CALL_TIMEOUT, address=address, size=size))
 
 
 @mcp.tool()
@@ -238,7 +244,7 @@ async def project_new() -> str:
 async def project_load(path: str) -> str:
     """Load a .rcnet project file from `path`.
     Returns JSON: {path, classes}."""
-    return _dump(await _invoke("project.load", path=path))
+    return _dump(await _invoke("project.load", _timeout=SLOW_CALL_TIMEOUT, path=path))
 
 
 @mcp.tool()
@@ -248,7 +254,7 @@ async def project_save(path: Optional[str] = None) -> str:
     params: dict[str, Any] = {}
     if path is not None:
         params["path"] = path
-    return _dump(await _invoke("project.save", **params))
+    return _dump(await _invoke("project.save", _timeout=SLOW_CALL_TIMEOUT, **params))
 
 
 @mcp.tool()
@@ -273,9 +279,13 @@ async def class_list() -> str:
 @mcp.tool()
 async def class_get(class_name: str, depth: int = 1, with_values: bool = True) -> str:
     """Get a class's node tree, optionally with live memory values.
-    `class_name` is a class name or UUID. `depth` limits how far nested class instances expand.
+    `class_name` is a class name or UUID. `depth` limits how far nested class instances expand;
+    it is clamped to [0, 16] (the plugin clamps too) and the effective value comes back as `depth`.
+    Cyclic class references (a class pointing at itself) are cut off with `"cycle": true`.
     Returns JSON: a node DTO tree (see module docstring for node selector shape)."""
-    return _dump(await _invoke("class.get", **{"class": class_name, "depth": depth, "with_values": with_values}))
+    depth = max(0, min(int(depth), MAX_DEPTH))
+    return _dump(await _invoke("class.get", _timeout=SLOW_CALL_TIMEOUT,
+                               **{"class": class_name, "depth": depth, "with_values": with_values}))
 
 
 @mcp.tool()
@@ -340,11 +350,15 @@ async def class_insert_bytes(node: NodeSelector, size: int) -> str:
 
 
 @mcp.tool()
-async def node_get(node: NodeSelector, with_values: bool = True) -> str:
+async def node_get(node: NodeSelector, depth: int = 1, with_values: bool = True) -> str:
     """Get one node's DTO by selector.
     `node`: {"class": name/uuid, "path": [i,...]} or {"class": name/uuid, "offset": n}.
+    `depth` limits how far children / inner nodes expand; it is clamped to [0, 16]
+    and the effective value comes back as `depth`. Cyclic class references are cut
+    off with `"cycle": true`.
     Returns JSON: node DTO."""
-    return _dump(await _invoke("node.get", node=node, with_values=with_values))
+    depth = max(0, min(int(depth), MAX_DEPTH))
+    return _dump(await _invoke("node.get", node=node, depth=depth, with_values=with_values))
 
 
 @mcp.tool()
@@ -600,7 +614,7 @@ async def analysis_disassemble(
     params: dict[str, Any] = {"address": address, "length": length, "function": function}
     if max_instructions is not None:
         params["max_instructions"] = max_instructions
-    return _dump(await _invoke("analysis.disassemble", **params))
+    return _dump(await _invoke("analysis.disassemble", _timeout=SLOW_CALL_TIMEOUT, **params))
 
 
 @mcp.tool()

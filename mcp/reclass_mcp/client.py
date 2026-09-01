@@ -12,9 +12,13 @@ import itertools
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
-DEFAULT_TIMEOUT = 5.0
+DEFAULT_TIMEOUT = 30.0
+
+# Calls which legitimately take much longer than a plain query: project IO,
+# a deep class.get, a 16 MiB memory.read, disassembling a whole function.
+SLOW_CALL_TIMEOUT = 120.0
 
 # Plugin-side per-call transfer cap is 16 MiB; give StreamReader headroom above
 # that for JSON/base64 framing overhead so a large single line (e.g. a big
@@ -192,19 +196,16 @@ class RcClient:
         if not self._connected or self._writer is None:
             await self._connect_locked()
 
-    async def _send_and_wait(self, payload: Any, ids: Iterable[Any]) -> None:
-        assert self._writer is not None
-        for _id in ids:
-            self._pending[_id] = asyncio.get_event_loop().create_future()
-        self._writer.write((json.dumps(payload) + "\n").encode("utf-8"))
-        await self._writer.drain()
-
-    async def call(self, method: str, **params: Any) -> Any:
+    async def call(self, method: str, _timeout: float | None = None, **params: Any) -> Any:
         """Issue a single JSON-RPC call and return its ``result``.
 
-        Raises ``RpcError`` for JSON-RPC error responses. Auto-reconnects
-        (re-reading the endpoint file) once on ``ConnectionError``/EOF.
+        ``_timeout`` overrides this client's default timeout for this one call
+        (used by the slow tools: project load/save, deep class.get, large
+        memory.read, analysis.disassemble). Raises ``RpcError`` for JSON-RPC
+        error responses. Auto-reconnects (re-reading the endpoint file) once on
+        ``ConnectionError``/EOF.
         """
+        timeout = self._timeout if _timeout is None else _timeout
         for attempt in range(2):
             try:
                 async with self._lock:
@@ -217,10 +218,10 @@ class RcClient:
                     self._writer.write((json.dumps(request) + "\n").encode("utf-8"))
                     await self._writer.drain()
                 try:
-                    return await asyncio.wait_for(fut, timeout=self._timeout)
+                    return await asyncio.wait_for(fut, timeout=timeout)
                 except asyncio.TimeoutError:
                     self._pending.pop(req_id, None)
-                    raise TimeoutError(f"reclass-mcp call '{method}' timed out after {self._timeout}s")
+                    raise TimeoutError(f"reclass-mcp call '{method}' timed out after {timeout}s")
             except (ConnectionError, EOFError) as exc:
                 async with self._lock:
                     await self._close_locked()
@@ -257,9 +258,21 @@ class RcClient:
                 try:
                     return await asyncio.wait_for(_wait_all(), timeout=self._timeout)
                 except asyncio.TimeoutError:
+                    raise TimeoutError(f"reclass-mcp batch call timed out after {self._timeout}s")
+                finally:
+                    # _wait_all awaits the futures in order, so a failure (or a
+                    # timeout) leaves the later ones unconsumed. Drop them from
+                    # the pending table and retrieve any exception already set,
+                    # otherwise asyncio logs "Future exception was never
+                    # retrieved" when they are collected.
                     for i in ids:
                         self._pending.pop(i, None)
-                    raise TimeoutError(f"reclass-mcp batch call timed out after {self._timeout}s")
+                        fut = futs[i]
+                        if fut.done():
+                            if not fut.cancelled():
+                                fut.exception()
+                        else:
+                            fut.cancel()
             except (ConnectionError, EOFError) as exc:
                 async with self._lock:
                     await self._close_locked()

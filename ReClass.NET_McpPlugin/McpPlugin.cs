@@ -64,6 +64,19 @@ namespace McpPlugin
 
 				host.Logger.Log(ex);
 
+				// Endpoint.Write (or anything after Start) may have thrown with
+				// the listener already up; do not leave an unreachable server
+				// running when Initialize reports failure.
+				try
+				{
+					server?.Stop();
+				}
+				catch (Exception)
+				{
+					// ignored
+				}
+				server = null;
+
 				return false;
 			}
 

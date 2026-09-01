@@ -9,8 +9,6 @@ namespace McpPlugin.Rpc
 		public const int CodeNoProcess = -32001;
 		public const int CodeBadArgument = -32002;
 
-		/// <summary>Alias of <see cref="CodeBadArgument"/> used at address sites.</summary>
-		public const int CodeBadAddress = CodeBadArgument;
 		public const int CodeNotFound = -32003;
 		public const int CodeInternal = -32004;
 		public const int CodeReferenced = -32005;

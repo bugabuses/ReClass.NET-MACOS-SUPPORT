@@ -749,6 +749,41 @@ def main():
           "%d changed: %s" % (len(dissected["changed"]),
                               [n["type"] for n in dissected["changed"]]))
 
+    # --- memory.read_batch caps ---------------------------------------------
+    check("read_batch 5000 entries -> -32002",
+          error_code(c.call("memory.read_batch",
+                            reads=[{"address": "0x1000", "size": 1}] * 5000)) == -32002,
+          "")
+    check("read_batch summed size > 16 MiB -> -32002",
+          error_code(c.call("memory.read_batch",
+                            reads=[{"address": "0x1000", "size": 8 * 1024 * 1024}] * 3)) == -32002,
+          "")
+
+    # --- concurrency and a large transfer, while still attached --------------
+    # Two clients at once, both usable; a normal client is unaffected by the
+    # auth deadline because its first line *is* the auth line.
+    a = Client(endpoint["port"], endpoint["token"])
+    b = Client(endpoint["port"], endpoint["token"])
+    check("two concurrent clients both work",
+          a.result("system.info").get("reclass_version") is not None
+          and b.result("system.info").get("reclass_version") is not None, "")
+    check("a second client sees the attached process",
+          a.result("process.status")["attached"] is True, "")
+
+    # A 16 MiB read of a large mapped region: either it succeeds or it fails
+    # cleanly with -32002, but it must not kill or wedge the server.
+    big = a.call("memory.read", address=sleep_module["start"],
+                 size=16 * 1024 * 1024)
+    ok_big = ("result" in big
+              and len(base64.b64decode(big["result"]["data_b64"])) == 16 * 1024 * 1024) \
+        or error_code(big) == -32002
+    check("16 MiB memory.read succeeds or fails cleanly", ok_big,
+          "error=%s" % (big.get("error", {}).get("code") if big else None))
+    check("server still healthy after the 16 MiB read",
+          b.result("system.info").get("reclass_version") is not None, "")
+    a.close()
+    b.close()
+
     detach = c.result("process.detach")
     check("process.detach", detach.get("ok") is True, "")
 
@@ -759,6 +794,59 @@ def main():
     check("no process -> -32001",
           error_code(c.call("memory.read", address="0x1000", size=4)) == -32001,
           "")
+
+    # --- cyclic class references must not blow the stack ---------------------
+    # PointerNode refuses a ClassNode as its direct inner node, so the cycle is
+    # built the way the GUI allows it: Cyc -> Pointer -> ClassInstance(helper),
+    # then helper[0] -> ClassInstance(Cyc). The project-level cycle check does
+    # not see it because a pointer breaks the layout cycle - but the DTO walk
+    # would recurse forever without the path guard.
+    c.result("class.create", name="Cyc", size=64)
+    ptr_node = c.result("node.change_type", node={"class": "Cyc", "path": [0]},
+                        type="Pointer", inner_type="ClassInstance")
+    helper = ptr_node["inner"]["class_ref"]
+    check("cycle setup: pointer to a helper class", helper is not None,
+          str(helper))
+    c.result("node.change_type", node={"class": helper, "path": [0]},
+             type="ClassInstance", class_ref="Cyc")
+
+    started = time.time()
+    cyc = c.result("class.get", **{"class": "Cyc", "depth": 16})
+    elapsed = time.time() - started
+    check("class.get depth=16 on a cyclic class returns",
+          cyc is not None and elapsed < 10, "%.2fs" % elapsed)
+    check("class.get reports the effective depth", cyc.get("depth") == 16,
+          str(cyc.get("depth")))
+
+    def find_cycle(dto):
+        if not isinstance(dto, dict):
+            return False
+        if dto.get("cycle") is True:
+            return True
+        for key in ("inner",):
+            if find_cycle(dto.get(key)):
+                return True
+        for child in dto.get("children") or []:
+            if find_cycle(child):
+                return True
+        return False
+
+    check("cycle marker present in the tree", find_cycle(cyc), "")
+
+    huge = c.result("class.get", **{"class": "Cyc", "depth": 100000})
+    check("class.get depth=100000 is clamped to 16", huge.get("depth") == 16,
+          str(huge.get("depth")))
+
+    deep_node = c.result("node.get", node={"class": "Cyc", "path": [0]},
+                         depth=100000)
+    check("node.get depth is clamped too", deep_node.get("depth") == 16,
+          str(deep_node.get("depth")))
+
+    check("app still alive after the cyclic reads",
+          c.result("system.info").get("reclass_version") is not None, "")
+
+    c.result("class.delete", **{"class": "Cyc", "force": True})
+    c.result("class.delete", **{"class": helper, "force": True})
 
     c.close()
 
@@ -779,6 +867,45 @@ def main():
     check("non-auth first line rejected", error_code(first) == -32007,
           str(first.get("error") if first else None))
     unauth.close()
+
+    # A batch sent before authenticating must be rejected and close the socket.
+    raw = socket.create_connection(("127.0.0.1", endpoint["port"]), timeout=10)
+    fp = raw.makefile("rwb")
+    fp.write((json.dumps([{"jsonrpc": "2.0", "id": 1, "method": "system.info"}])
+              + "\n").encode("utf-8"))
+    fp.flush()
+    line = fp.readline()
+    response = json.loads(line.decode("utf-8")) if line else None
+    check("batch before auth rejected",
+          error_code(response) == -32007 and fp.readline() == b"",
+          str(response))
+    raw.close()
+
+    # An over-long line (> the 16 MiB cap) must close the connection.
+    over = socket.create_connection(("127.0.0.1", endpoint["port"]), timeout=30)
+    closed_on_overlong = False
+    try:
+        chunk = b"x" * (1024 * 1024)
+        for _ in range(17):
+            over.sendall(chunk)
+        over.sendall(b"\n")
+        closed_on_overlong = over.recv(1) == b""
+    except OSError:
+        closed_on_overlong = True  # RST/EPIPE: the server dropped us
+    check("over-long line (17 MiB) closes the connection", closed_on_overlong, "")
+    over.close()
+
+    # An unauthenticated socket which sends nothing must be dropped ~5 s in.
+    silent = socket.create_connection(("127.0.0.1", endpoint["port"]), timeout=15)
+    started = time.time()
+    try:
+        dropped = silent.recv(1) == b""
+    except OSError:
+        dropped = True
+    waited = time.time() - started
+    check("silent client dropped by the auth deadline",
+          dropped and waited < 8, "%.1fs" % waited)
+    silent.close()
 
     print("\n%d passed, %d failed" % (PASSED, FAILED))
     return 1 if FAILED else 0
