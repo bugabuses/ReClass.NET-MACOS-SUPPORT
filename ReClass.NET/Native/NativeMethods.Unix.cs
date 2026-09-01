@@ -19,7 +19,37 @@ namespace ReClassNET.Native
 		[DllImport("__Internal")]
 		private static extern int dlclose(IntPtr handle);
 
+		[DllImport("libc")]
+		private static extern int uname(IntPtr buf);
+
 		#endregion
+
+		/// <summary>Returns utsname.sysname ("Darwin", "Linux") or empty string on failure.</summary>
+		internal static string GetKernelName()
+		{
+			var buffer = IntPtr.Zero;
+			try
+			{
+				// utsname is 5 (or 6) fields of at most 256 bytes each on Linux/macOS.
+				buffer = Marshal.AllocHGlobal(8192);
+				if (uname(buffer) != 0)
+				{
+					return string.Empty;
+				}
+				return Marshal.PtrToStringAnsi(buffer) ?? string.Empty;
+			}
+			catch
+			{
+				return string.Empty;
+			}
+			finally
+			{
+				if (buffer != IntPtr.Zero)
+				{
+					Marshal.FreeHGlobal(buffer);
+				}
+			}
+		}
 
 		public IntPtr LoadLibrary(string fileName)
 		{

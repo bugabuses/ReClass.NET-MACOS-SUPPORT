@@ -18,7 +18,7 @@
 - All structs are `#pragma pack(1)` (from `NativeCore/ReClassNET_Plugin.hpp`). Never redefine them.
 - Debugger exports return `false` / no-op. Input exports are stubs. Do not implement these.
 - No arm64 disassembly gating in C# (ABI unchanged).
-- Root repo for git commands: `/Users/ops/Desktop/Reclass-Mac/ReClass.NET`. Branch: `master`. Commit after every task.
+- Root repo for git commands: the repository root. Branch: `master`. Commit after every task.
 - Tests needing `task_for_pid` must be run with `sudo`. Plan steps say so explicitly.
 - Every commit message ends with:
   ```

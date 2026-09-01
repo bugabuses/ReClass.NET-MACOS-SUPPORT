@@ -35,6 +35,32 @@ namespace ReClassNET.Native
 			return isUnix.Value;
 		}
 
+		private static bool? isMacOS;
+		public static bool IsMacOS()
+		{
+			if (isMacOS.HasValue)
+			{
+				return isMacOS.Value;
+			}
+
+			var p = GetPlatformId();
+			if (p == PlatformID.MacOSX)
+			{
+				isMacOS = true;
+			}
+			else if (IsUnix())
+			{
+				// Mono reports PlatformID.Unix on macOS; ask the kernel.
+				isMacOS = NativeMethodsUnix.GetKernelName() == "Darwin";
+			}
+			else
+			{
+				isMacOS = false;
+			}
+
+			return isMacOS.Value;
+		}
+
 		private static PlatformID? plattformId;
 		public static PlatformID GetPlatformId()
 		{

@@ -92,6 +92,56 @@ RUN apt-get update \
  && apt-get clean all
 ```
 
+## macOS (experimental)
+
+ReClass.NET runs on Apple Silicon macOS under Mono with the X11 WinForms backend.
+
+**Prerequisites**
+
+```
+brew install mono mono-libgdiplus autoconf automake libtool pkg-config glib libpng jpeg giflib libtiff libexif pango
+brew install --cask xquartz
+```
+
+Then log out and back in, and start XQuartz once. (Homebrew's libgdiplus is used only at build time; the X11-capable libgdiplus from `scripts/build-libgdiplus-macos.sh` is used at runtime.)
+
+**Build**
+
+The build requires two native pieces in addition to the C# binaries:
+
+```
+make macos                                # builds launcher, app, NativeCore.dylib into build/Release/x64
+scripts/build-libgdiplus-macos.sh         # builds libgdiplus from source with cairo-xlib support
+scripts/build-xim-shim-macos.sh           # builds XIM interpose shim
+```
+
+(Do not run `make macos_update`; it is known not to work.)
+
+**Run**
+
+```
+./run-macos.sh
+```
+
+The script runs Mono as root via `sudo` because `task_for_pid` requires it. It will fail loudly if the libgdiplus or XIM shim builds are missing.
+
+**Known Issues**
+
+- Non-fatal X11 `BadFont` and `BadCursor` errors print to stderr.
+
+**Known issues / security**
+
+- `run-macos.sh` loads `NativeCore.dylib`, the XIM shim and `libgdiplus` from the repository checkout as root (via `sudo`). Keep the checkout owned by you and not group- or world-writable; the script refuses to run otherwise.
+
+**Limitations**
+
+- Reading other processes requires root. Even as root, macOS System Integrity Protection prevents attaching to Apple-signed / hardened-runtime processes; third-party apps and games work.
+- The debugger ("Find out what accesses/writes this address") is not available.
+- Disassembly uses distorm (x86 only). It is correct for x86_64 processes running under Rosetta and meaningless for native arm64 processes.
+- Debug symbols (PDB) and file-type registration are Windows-only.
+- The UI is drawn through XQuartz and does not look native.
+- Attach-to-process was not end-to-end verified in this port yet (experimental).
+
 ## Videos
 
 [Youtube Playlist](https://www.youtube.com/playlist?list=PLO246BmtoITanq3ygMCL8_w0eov4D8hjk)
@@ -136,3 +186,11 @@ Settings
 - [DrP3pp3r](https://github.com/DrP3pp3r)
 - [ko1N](https://github.com/ko1N)
 - [Niemand](https://github.com/niemand-sec) (see his talk at [BlackHat Europe 2019 (London) "Unveiling the underground world of Anti-Cheats"](https://www.blackhat.com/eu-19/briefings/schedule/index.html#unveiling-the-underground-world-of-anti-cheats-17358))
+
+## MCP server
+
+ReClass.NET can be driven by MCP clients (e.g. Claude Code) via a Python
+bridge that talks to an in-process C# plugin over a local TCP/JSON-RPC
+connection, exposing process control, memory access, project/class/node
+editing, code generation, scanning, and analysis as MCP tools. See
+[`mcp/README.md`](mcp/README.md) for setup and registration instructions.

@@ -75,3 +75,61 @@ dist:
 	test -d build/Debug/x64 && cp -r Dependencies/x64/* build/Debug/x64
 	test -d build/Release/x86 && cp -r Dependencies/x86/* build/Release/x86
 	test -d build/Release/x64 && cp -r Dependencies/x64/* build/Release/x64
+
+# ---- macOS (Mono + XQuartz, arm64) ----
+MACOS_XBUILD = DYLD_LIBRARY_PATH=/opt/homebrew/lib xbuild /p:Platform=x64 /nologo /verbosity:minimal
+MACOS_XBUILD_ANYCPU = DYLD_LIBRARY_PATH=/opt/homebrew/lib xbuild /nologo /verbosity:minimal
+
+# NOTE: nuget restore is currently unneeded for the macOS build (Dependencies/
+# already ships the resolved packages) and is known NOT to work with this
+# xbuild/Mono combo on arm64 - Mono's bundled nuget.exe fails to resolve
+# against this solution's package sources under this xbuild version. Left
+# here only for reference; do not wire it into macos/macos_debug/macos_release.
+macos_update:
+	mono Dependencies/nuget.exe restore ReClass.NET.sln
+
+macos_debug:
+	$(MACOS_XBUILD_ANYCPU) /p:Configuration=Debug ReClass.NET_Launcher/ReClass.NET_Launcher.csproj
+	$(MACOS_XBUILD) /p:Configuration=Debug ReClass.NET/ReClass.NET.csproj
+	$(MACOS_XBUILD_ANYCPU) /p:Configuration=Debug ReClass.NET_McpPlugin/McpPlugin.csproj
+	$(MAKE) -C NativeCore/MacOS debug
+	$(MAKE) macos_dist_debug
+
+macos_release:
+	$(MACOS_XBUILD_ANYCPU) /p:Configuration=Release ReClass.NET_Launcher/ReClass.NET_Launcher.csproj
+	$(MACOS_XBUILD) /p:Configuration=Release ReClass.NET/ReClass.NET.csproj
+	$(MACOS_XBUILD_ANYCPU) /p:Configuration=Release ReClass.NET_McpPlugin/McpPlugin.csproj
+	$(MAKE) -C NativeCore/MacOS release
+	$(MAKE) macos_dist_release
+
+macos_dist_debug:
+	mkdir -p build/Debug/x64/Plugins
+	cp -r ReClass.NET/bin/Debug/x64/* build/Debug/x64/
+	-cp ReClass.NET_Launcher/bin/Debug/ReClass.NET_Launcher.exe build/Debug/x64/ 2>/dev/null
+	cp NativeCore/MacOS/build/debug/NativeCore.dylib build/Debug/x64/
+	cp -r Dependencies/x64/* build/Debug/x64/ 2>/dev/null || true
+	cp bin/Debug/Plugins/McpPlugin.dll build/Debug/x64/Plugins/
+
+macos_dist_release:
+	mkdir -p build/Release/x64/Plugins
+	cp -r ReClass.NET/bin/Release/x64/* build/Release/x64/
+	-cp ReClass.NET_Launcher/bin/Release/ReClass.NET_Launcher.exe build/Release/x64/ 2>/dev/null
+	cp NativeCore/MacOS/build/release/NativeCore.dylib build/Release/x64/
+	cp -r Dependencies/x64/* build/Release/x64/ 2>/dev/null || true
+	cp bin/Release/Plugins/McpPlugin.dll build/Release/x64/Plugins/
+
+# Runs the plugin's live RPC smoke test and the Python bridge's test suite
+# (unit + integration). REQUIRES THE APP RUNNING: start ReClass.NET with the
+# MCP plugin loaded (./run-macos.sh) and a `sleep 300 &` to attach to first,
+# otherwise both halves fail/skip.
+macos_mcp_test:
+	python3 ReClass.NET_McpPlugin/test/rpc_smoke.py
+	cd mcp && uv run pytest -q
+
+macos: macos_release
+
+macos_clean:
+	rm -rf ReClass.NET/bin ReClass.NET/obj ReClass.NET_Launcher/bin ReClass.NET_Launcher/obj bin obj build
+	$(MAKE) -C NativeCore/MacOS clean
+
+.PHONY: macos macos_mcp_test macos_update macos_debug macos_release macos_dist_debug macos_dist_release macos_clean

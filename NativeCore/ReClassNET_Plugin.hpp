@@ -9,7 +9,7 @@
 
 // OS Specific
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
 	#define RC_CallConv
 #elif _WIN32
 	#define RC_CallConv __stdcall
