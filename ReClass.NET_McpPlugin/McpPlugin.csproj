@@ -83,4 +83,25 @@
     <Compile Include="Serialization\ValueCodec.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!--
+    A plain solution build should produce a plugin ReClass.NET can actually
+    load: copy the assembly next to the built executable's Plugins directory.
+    The Makefile's macos_dist_* copy stays as it is (it targets build/).
+  -->
+  <Target Name="AfterBuild">
+    <!-- Direct csproj builds: xbuild leaves SolutionDir at the project dir, so
+         ReClass.NET.exe lands under ReClass.NET\bin\... instead. -->
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFolder="$(SolutionDir)ReClass.NET\bin\$(Configuration)\x64\Plugins\"
+          Condition="Exists('$(SolutionDir)ReClass.NET\bin\$(Configuration)\x64')"
+          ContinueOnError="true" />
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFolder="$(SolutionDir)bin\$(Configuration)\x64\Plugins\"
+          Condition="Exists('$(SolutionDir)bin\$(Configuration)\x64')"
+          ContinueOnError="true" />
+    <Copy SourceFiles="$(TargetPath)"
+          DestinationFolder="$(SolutionDir)bin\$(Configuration)\x86\Plugins\"
+          Condition="Exists('$(SolutionDir)bin\$(Configuration)\x86')"
+          ContinueOnError="true" />
+  </Target>
 </Project>

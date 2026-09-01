@@ -42,7 +42,7 @@ namespace McpPlugin.Api
 						generator = new CSharpCodeGenerator();
 						break;
 					default:
-						throw RpcException.BadAddress($"unknown language '{language}', expected 'cpp' or 'csharp'");
+						throw RpcException.BadArgument($"unknown language '{language}', expected 'cpp' or 'csharp'");
 				}
 
 				IReadOnlyList<ClassNode> classes;

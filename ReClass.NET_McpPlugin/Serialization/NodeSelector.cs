@@ -23,22 +23,26 @@ namespace McpPlugin.Serialization
 		{
 			if (value == null)
 			{
-				throw RpcException.BadAddress("missing parameter 'class'");
+				throw RpcException.BadArgument("missing parameter 'class'");
 			}
 
 			var identifier = System.Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty;
 			if (identifier.Length == 0)
 			{
-				throw RpcException.BadAddress("parameter 'class' must not be empty");
+				throw RpcException.BadArgument("parameter 'class' must not be empty");
 			}
 
+			// A well-formed uuid is only ever a uuid: falling back to the name
+			// lookup would report "no class named <uuid>", which reads as if a
+			// class could be called that.
 			if (Guid.TryParse(identifier, out var uuid))
 			{
 				var byUuid = project.Classes.FirstOrDefault(c => c.Uuid.Equals(uuid));
-				if (byUuid != null)
+				if (byUuid == null)
 				{
-					return byUuid;
+					throw RpcException.NotFound($"no class with uuid '{identifier}'");
 				}
+				return byUuid;
 			}
 
 			var byName = project.Classes.FirstOrDefault(c => string.Equals(c.Name, identifier, StringComparison.Ordinal));
@@ -97,7 +101,7 @@ namespace McpPlugin.Serialization
 				}
 				catch (Exception)
 				{
-					throw RpcException.BadAddress($"'path[{level}]' is not an index");
+					throw RpcException.BadArgument($"'path[{level}]' is not an index");
 				}
 
 				switch (current)

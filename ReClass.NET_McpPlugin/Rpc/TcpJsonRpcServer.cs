@@ -16,13 +16,22 @@ namespace McpPlugin.Rpc
 	/// </summary>
 	public class TcpJsonRpcServer
 	{
-		private const int MaxLineLength = 64 * 1024 * 1024;
+		/// <summary>
+		/// Longest accepted request line, matching the spec's 16 MiB transfer
+		/// cap. The limit is enforced while reading, so an over-long line is
+		/// never materialised.
+		/// </summary>
+		public const int MaxLineLength = 16 * 1024 * 1024;
+
+		/// <summary>Maximum number of simultaneously connected clients.</summary>
+		public const int MaxClients = 16;
 
 		private readonly RpcDispatcher dispatcher;
 		private readonly string token;
 		private readonly Action<string> log;
 
 		private readonly List<TcpClient> clients = new List<TcpClient>();
+		private readonly List<Thread> clientThreads = new List<Thread>();
 
 		private TcpListener listener;
 		private Thread acceptThread;
@@ -52,6 +61,10 @@ namespace McpPlugin.Rpc
 			acceptThread.Start();
 		}
 
+		/// <summary>
+		/// Stops accepting, closes every open client socket (which unblocks the
+		/// client threads' reads) and joins the accept thread.
+		/// </summary>
 		public void Stop()
 		{
 			running = false;
@@ -64,21 +77,60 @@ namespace McpPlugin.Rpc
 			{
 				// ignored
 			}
+			listener = null;
 
+			List<Thread> threads;
 			lock (clients)
 			{
 				foreach (var client in clients)
 				{
-					try
-					{
-						client.Close();
-					}
-					catch (Exception)
-					{
-						// ignored
-					}
+					CloseQuietly(client);
 				}
 				clients.Clear();
+
+				threads = new List<Thread>(clientThreads);
+				clientThreads.Clear();
+			}
+
+			var accept = acceptThread;
+			acceptThread = null;
+			if (accept != null && accept.IsAlive)
+			{
+				try
+				{
+					accept.Join(2000);
+				}
+				catch (Exception)
+				{
+					// ignored
+				}
+			}
+
+			foreach (var thread in threads)
+			{
+				try
+				{
+					if (thread.IsAlive)
+					{
+						thread.Join(1000);
+					}
+				}
+				catch (Exception)
+				{
+					// ignored
+				}
+			}
+		}
+
+		private static void CloseQuietly(TcpClient client)
+		{
+			try
+			{
+				client.Close();
+			}
+			catch (Exception)
+			{
+				// ignored
 			}
 		}
 
@@ -100,16 +152,29 @@ namespace McpPlugin.Rpc
 					return;
 				}
 
-				lock (clients)
-				{
-					clients.Add(client);
-				}
-
 				var thread = new Thread(() => ClientLoop(client))
 				{
 					IsBackground = true,
 					Name = "McpPlugin.Client"
 				};
+
+				lock (clients)
+				{
+					if (clients.Count >= MaxClients)
+					{
+						log($"mcp: refusing a client, the limit of {MaxClients} concurrent connections is reached");
+
+						CloseQuietly(client);
+						continue;
+					}
+
+					clients.Add(client);
+					clientThreads.Add(thread);
+
+					// Threads of clients which already went away.
+					clientThreads.RemoveAll(t => !t.IsAlive && t != thread);
+				}
+
 				thread.Start();
 			}
 		}
@@ -121,13 +186,14 @@ namespace McpPlugin.Rpc
 				client.NoDelay = true;
 
 				using (var stream = client.GetStream())
-				using (var reader = new StreamReader(stream, new UTF8Encoding(false), false, 8192))
 				using (var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" })
 				{
+					var reader = new BoundedLineReader(stream, MaxLineLength);
+
 					var authenticated = false;
 
 					string line;
-					while (running && (line = ReadLine(reader)) != null)
+					while (running && (line = reader.ReadLine()) != null)
 					{
 						if (line.Trim().Length == 0)
 						{
@@ -156,6 +222,10 @@ namespace McpPlugin.Rpc
 					}
 				}
 			}
+			catch (LineTooLongException ex)
+			{
+				log($"mcp: {ex.Message}, closing the connection");
+			}
 			catch (Exception)
 			{
 				// A client going away is not an error worth logging.
@@ -165,26 +235,10 @@ namespace McpPlugin.Rpc
 				lock (clients)
 				{
 					clients.Remove(client);
+					clientThreads.RemoveAll(t => !t.IsAlive);
 				}
-				try
-				{
-					client.Close();
-				}
-				catch (Exception)
-				{
-					// ignored
-				}
+				CloseQuietly(client);
 			}
-		}
-
-		private static string ReadLine(StreamReader reader)
-		{
-			var line = reader.ReadLine();
-			if (line != null && line.Length > MaxLineLength)
-			{
-				throw new IOException("request line too long");
-			}
-			return line;
 		}
 
 		/// <summary>Validates the first line. On failure the caller closes the connection.</summary>
@@ -253,6 +307,94 @@ namespace McpPlugin.Rpc
 				difference |= a[i] ^ b[i];
 			}
 			return difference == 0;
+		}
+	}
+
+	/// <summary>Raised when a client sends a line longer than the transfer cap.</summary>
+	public class LineTooLongException : IOException
+	{
+		public LineTooLongException(string message)
+			: base(message)
+		{
+		}
+	}
+
+	/// <summary>
+	/// Reads newline-delimited UTF-8 lines straight off a stream with a hard
+	/// byte budget. Unlike <see cref="StreamReader.ReadLine"/> this never
+	/// materialises the over-long line: the budget is checked as bytes arrive
+	/// and the read is aborted the moment it is exceeded.
+	/// </summary>
+	internal class BoundedLineReader
+	{
+		private const int ChunkSize = 8192;
+
+		private readonly Stream stream;
+		private readonly int maxLineLength;
+		private readonly byte[] chunk = new byte[ChunkSize];
+		private readonly UTF8Encoding encoding = new UTF8Encoding(false);
+
+		private int available;
+		private int position;
+
+		public BoundedLineReader(Stream stream, int maxLineLength)
+		{
+			this.stream = stream;
+			this.maxLineLength = maxLineLength;
+		}
+
+		/// <summary>The next line without its terminator, or null at end of stream.</summary>
+		public string ReadLine()
+		{
+			using (var line = new MemoryStream())
+			{
+				while (true)
+				{
+					if (position >= available)
+					{
+						available = stream.Read(chunk, 0, ChunkSize);
+						position = 0;
+
+						if (available <= 0)
+						{
+							return line.Length == 0 ? null : Materialise(line);
+						}
+					}
+
+					var start = position;
+					while (position < available && chunk[position] != (byte)'\n')
+					{
+						++position;
+					}
+
+					var count = position - start;
+					if (line.Length + count > maxLineLength)
+					{
+						throw new LineTooLongException(
+							$"a client sent a request line longer than the {maxLineLength} byte limit");
+					}
+					line.Write(chunk, start, count);
+
+					if (position < available)
+					{
+						++position; // consume the '\n'
+						return Materialise(line);
+					}
+				}
+			}
+		}
+
+		private string Materialise(MemoryStream line)
+		{
+			var bytes = line.ToArray();
+
+			var length = bytes.Length;
+			if (length > 0 && bytes[length - 1] == (byte)'\r')
+			{
+				--length; // tolerate CRLF
+			}
+
+			return encoding.GetString(bytes, 0, length);
 		}
 	}
 

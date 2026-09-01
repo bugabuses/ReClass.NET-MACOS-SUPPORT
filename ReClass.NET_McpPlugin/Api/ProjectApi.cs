@@ -32,11 +32,6 @@ namespace McpPlugin.Api
 			}
 		}
 
-		public static Dictionary<string, object> Ok()
-		{
-			return new Dictionary<string, object> { { "ok", true } };
-		}
-
 		/// <summary>The <c>project.info.classes</c> entry of a class.</summary>
 		public static Dictionary<string, object> DescribeClass(ClassNode node)
 		{
@@ -106,21 +101,43 @@ namespace McpPlugin.Api
 
 				ProjectAccess.Refresh();
 
-				return (object)ProjectAccess.Ok();
+				return (object)Json.Ok();
 			});
 		}
+
+		/// <summary>
+		/// The extensions <c>MainForm.LoadProjectFromPath</c> knows an importer
+		/// for. Anything else makes it log "unknown type" and return — after it
+		/// has already replaced the current project — so it is rejected here.
+		/// </summary>
+		private static readonly string[] LoadableExtensions =
+		{
+			ReClassNetFile.FileExtension,
+			ReClassQtFile.FileExtension,
+			ReClassFile.FileExtension
+		};
 
 		private object Load(Dictionary<string, object> p)
 		{
 			var path = Params.Get<string>(p, "path");
 
+			// Validated *before* the call: LoadProjectFromPath swaps in a fresh
+			// project first and only then discovers it can not read the file,
+			// so a bad path would silently wipe the loaded project.
+			var extension = System.IO.Path.GetExtension(path)?.ToLowerInvariant() ?? string.Empty;
+			if (Array.IndexOf(LoadableExtensions, extension) < 0)
+			{
+				throw RpcException.BadArgument(
+					$"'{path}' has an unsupported project extension, expected one of {string.Join(", ", LoadableExtensions)}");
+			}
+
+			if (!System.IO.File.Exists(path))
+			{
+				throw RpcException.NotFound($"no such file '{path}'");
+			}
+
 			return UiThread.Invoke(() =>
 			{
-				if (!System.IO.File.Exists(path))
-				{
-					throw RpcException.NotFound($"no such file '{path}'");
-				}
-
 				Program.MainForm.LoadProjectFromPath(path);
 
 				ProjectAccess.Refresh();
@@ -144,7 +161,7 @@ namespace McpPlugin.Api
 				var path = Params.GetOptional(p, "path", project.Path);
 				if (string.IsNullOrEmpty(path))
 				{
-					throw RpcException.BadAddress("the project has no path yet, pass 'path'");
+					throw RpcException.BadArgument("the project has no path yet, pass 'path'");
 				}
 
 				new ReClassNetFile(project).Save(path, Program.Logger);

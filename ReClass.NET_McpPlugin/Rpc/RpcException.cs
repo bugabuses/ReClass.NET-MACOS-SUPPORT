@@ -7,7 +7,10 @@ namespace McpPlugin.Rpc
 	public class RpcException : Exception
 	{
 		public const int CodeNoProcess = -32001;
-		public const int CodeBadAddress = -32002;
+		public const int CodeBadArgument = -32002;
+
+		/// <summary>Alias of <see cref="CodeBadArgument"/> used at address sites.</summary>
+		public const int CodeBadAddress = CodeBadArgument;
 		public const int CodeNotFound = -32003;
 		public const int CodeInternal = -32004;
 		public const int CodeReferenced = -32005;
@@ -35,9 +38,19 @@ namespace McpPlugin.Rpc
 			return new RpcException(CodeNoProcess, "no process attached");
 		}
 
+		/// <summary>A malformed or rejected argument (JSON-RPC code -32002).</summary>
+		public static RpcException BadArgument(string message)
+		{
+			return new RpcException(CodeBadArgument, message);
+		}
+
+		/// <summary>
+		/// Thin alias of <see cref="BadArgument"/>, kept for the places where
+		/// the rejected argument really is an address.
+		/// </summary>
 		public static RpcException BadAddress(string message)
 		{
-			return new RpcException(CodeBadAddress, message);
+			return BadArgument(message);
 		}
 
 		public static RpcException NotFound(string message)

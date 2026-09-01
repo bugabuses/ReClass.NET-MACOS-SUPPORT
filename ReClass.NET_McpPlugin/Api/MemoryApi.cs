@@ -46,7 +46,7 @@ namespace McpPlugin.Api
 			var size = Params.Get<int>(p, name);
 			if (size < 0 || size > MaxTransferSize)
 			{
-				throw RpcException.BadAddress($"'{name}' must be between 0 and {MaxTransferSize}");
+				throw RpcException.BadArgument($"'{name}' must be between 0 and {MaxTransferSize}");
 			}
 			return size;
 		}
@@ -121,12 +121,12 @@ namespace McpPlugin.Api
 			}
 			catch (FormatException)
 			{
-				throw RpcException.BadAddress("'data_b64' is not valid base64");
+				throw RpcException.BadArgument("'data_b64' is not valid base64");
 			}
 
 			if (data.Length > MaxTransferSize)
 			{
-				throw RpcException.BadAddress($"'data_b64' decodes to more than {MaxTransferSize} bytes");
+				throw RpcException.BadArgument($"'data_b64' decodes to more than {MaxTransferSize} bytes");
 			}
 
 			if (!Process.WriteRemoteMemory(address, data))
@@ -149,7 +149,7 @@ namespace McpPlugin.Api
 				var length = Params.GetOptional(p, "length", 256);
 				if (length <= 0 || length > MaxTransferSize)
 				{
-					throw RpcException.BadAddress($"'length' must be between 1 and {MaxTransferSize}");
+					throw RpcException.BadArgument($"'length' must be between 1 and {MaxTransferSize}");
 				}
 
 				var text = ValueCodec.DecodeString(type, ReadOrThrow(address, length));
@@ -160,13 +160,13 @@ namespace McpPlugin.Api
 			var count = Params.GetOptional(p, "count", 1);
 			if (count <= 0)
 			{
-				throw RpcException.BadAddress("'count' must be positive");
+				throw RpcException.BadArgument("'count' must be positive");
 			}
 
 			var size = ValueCodec.SizeOf(type);
 			if ((long)size * count > MaxTransferSize)
 			{
-				throw RpcException.BadAddress($"'count' would read more than {MaxTransferSize} bytes");
+				throw RpcException.BadArgument($"'count' would read more than {MaxTransferSize} bytes");
 			}
 
 			var data = ReadOrThrow(address, size * count);
@@ -200,12 +200,17 @@ namespace McpPlugin.Api
 			var encoding = Params.GetOptional(p, "encoding", "utf8");
 			var maxLength = Params.GetOptional(p, "max_length", 256);
 
-			if (maxLength <= 0 || maxLength > MaxTransferSize)
-			{
-				throw RpcException.BadAddress($"'max_length' must be between 1 and {MaxTransferSize}");
-			}
+			// Validate the encoding first: an unknown one used to silently read
+			// 4 bytes per character.
+			var charSize = ValueCodec.CharSizeOf(encoding);
 
-			var charSize = encoding.Trim().ToLowerInvariant() == "utf8" ? 1 : (encoding.Trim().ToLowerInvariant() == "utf16" ? 2 : 4);
+			// The *byte* count is what the transfer cap applies to, so a utf32
+			// read can not ask for four times the limit.
+			if (maxLength <= 0 || (long)maxLength * charSize > MaxTransferSize)
+			{
+				throw RpcException.BadArgument(
+					$"'max_length' must be between 1 and {MaxTransferSize / charSize} for encoding '{encoding}'");
+			}
 
 			var data = ReadOrThrow(address, maxLength * charSize);
 
@@ -225,7 +230,7 @@ namespace McpPlugin.Api
 			}
 			catch (Exception ex)
 			{
-				throw RpcException.BadAddress($"failed to evaluate '{formula}': {ex.Message}");
+				throw RpcException.BadArgument($"failed to evaluate '{formula}': {ex.Message}");
 			}
 
 			return new Dictionary<string, object> { { "address", Json.Address(address) } };

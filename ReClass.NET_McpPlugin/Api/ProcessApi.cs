@@ -75,7 +75,7 @@ namespace McpPlugin.Api
 			}
 			else
 			{
-				throw RpcException.BadAddress("either 'id' or 'name' is required");
+				throw RpcException.BadArgument("either 'id' or 'name' is required");
 			}
 
 			var target = info;
@@ -144,7 +144,7 @@ namespace McpPlugin.Api
 					parsed = ControlRemoteProcessAction.Terminate;
 					break;
 				default:
-					throw RpcException.BadAddress($"unknown action '{action}', expected suspend|resume|terminate");
+					throw RpcException.BadArgument($"unknown action '{action}', expected suspend|resume|terminate");
 			}
 
 			Process.ControlRemoteProcess(parsed);

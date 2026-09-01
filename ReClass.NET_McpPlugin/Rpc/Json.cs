@@ -24,7 +24,10 @@ namespace McpPlugin.Rpc
 			return CreateSerializer().DeserializeObject(text);
 		}
 
-		/// <summary>Formats an address as a lowercase-prefixed hex string, e.g. <c>"0x1F00A0"</c>.</summary>
+		/// <summary>
+		/// Formats an address as a <c>"0x"</c>-prefixed, upper-case hex string,
+		/// e.g. <c>"0x1F00A0"</c>.
+		/// </summary>
 		public static string Address(IntPtr address)
 		{
 			return "0x" + ((ulong)address.ToInt64()).ToString("X", CultureInfo.InvariantCulture);
@@ -33,6 +36,12 @@ namespace McpPlugin.Rpc
 		public static Dictionary<string, object> Object()
 		{
 			return new Dictionary<string, object>();
+		}
+
+		/// <summary>The <c>{"ok": true}</c> result every mutation returns.</summary>
+		public static Dictionary<string, object> Ok()
+		{
+			return new Dictionary<string, object> { { "ok", true } };
 		}
 	}
 
@@ -48,7 +57,7 @@ namespace McpPlugin.Rpc
 		{
 			if (!Has(p, name))
 			{
-				throw RpcException.BadAddress($"missing parameter '{name}'");
+				throw RpcException.BadArgument($"missing parameter '{name}'");
 			}
 			return p[name];
 		}
@@ -79,7 +88,7 @@ namespace McpPlugin.Rpc
 			}
 			catch (Exception)
 			{
-				throw RpcException.BadAddress($"parameter '{name}' has an unexpected type");
+				throw RpcException.BadArgument($"parameter '{name}' has an unexpected type");
 			}
 		}
 
@@ -89,11 +98,19 @@ namespace McpPlugin.Rpc
 			return ParseAddress(GetRaw(p, name), name);
 		}
 
+		/// <summary>
+		/// Parses an address. Addresses are unsigned: a negative number, or a
+		/// string carrying a sign, is rejected with -32002.
+		/// </summary>
 		public static IntPtr ParseAddress(object value, string name)
 		{
 			if (value is string s)
 			{
 				s = s.Trim();
+				if (s.StartsWith("-", StringComparison.Ordinal) || s.StartsWith("+", StringComparison.Ordinal))
+				{
+					throw RpcException.BadAddress($"parameter '{name}' must not be negative");
+				}
 				if (s.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
 				{
 					s = s.Substring(2);
@@ -105,14 +122,22 @@ namespace McpPlugin.Rpc
 				return new IntPtr(unchecked((long)parsed));
 			}
 
+			long number;
 			try
 			{
-				return new IntPtr(System.Convert.ToInt64(value, CultureInfo.InvariantCulture));
+				number = System.Convert.ToInt64(value, CultureInfo.InvariantCulture);
 			}
 			catch (Exception)
 			{
 				throw RpcException.BadAddress($"parameter '{name}' is not a valid address");
 			}
+
+			if (number < 0)
+			{
+				throw RpcException.BadAddress($"parameter '{name}' must not be negative");
+			}
+
+			return new IntPtr(number);
 		}
 
 		public static List<object> GetList(Dictionary<string, object> p, string name)
@@ -126,7 +151,7 @@ namespace McpPlugin.Rpc
 			{
 				return list;
 			}
-			throw RpcException.BadAddress($"parameter '{name}' must be an array");
+			throw RpcException.BadArgument($"parameter '{name}' must be an array");
 		}
 
 		public static Dictionary<string, object> AsObject(object value, string name)
@@ -135,7 +160,7 @@ namespace McpPlugin.Rpc
 			{
 				return dict;
 			}
-			throw RpcException.BadAddress($"'{name}' must be an object");
+			throw RpcException.BadArgument($"'{name}' must be an object");
 		}
 	}
 }

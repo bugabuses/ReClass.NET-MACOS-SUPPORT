@@ -27,6 +27,8 @@ namespace McpPlugin
 
 			try
 			{
+				Endpoint.Logger = Log;
+
 				UiThread.Initialize(host.MainWindow);
 
 				var dispatcher = new RpcDispatcher();
@@ -52,7 +54,9 @@ namespace McpPlugin
 
 				endpointPath = Endpoint.Write(server.Port, token);
 
-				Log($"mcp: listening on 127.0.0.1:{server.Port}, endpoint file {endpointPath}");
+				Log(endpointPath != null
+					? $"mcp: listening on 127.0.0.1:{server.Port}, endpoint file {endpointPath}"
+					: $"mcp: listening on 127.0.0.1:{server.Port}, but the endpoint file could not be secured and was not written");
 			}
 			catch (Exception ex)
 			{
@@ -88,7 +92,15 @@ namespace McpPlugin
 			}
 			scannerApi = null;
 
-			Endpoint.Delete();
+			if (endpointPath != null)
+			{
+				Endpoint.Delete();
+				endpointPath = null;
+			}
+
+			UiThread.Terminate();
+
+			Endpoint.Logger = null;
 
 			host = null;
 		}
@@ -103,8 +115,6 @@ namespace McpPlugin
 			{
 				// ignored
 			}
-
-			Console.WriteLine(message);
 		}
 	}
 }

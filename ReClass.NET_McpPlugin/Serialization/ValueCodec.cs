@@ -40,13 +40,32 @@ namespace McpPlugin.Serialization
 				case "utf32":
 					return -1;
 				default:
-					throw RpcException.BadAddress($"unknown value type '{type}'");
+					throw RpcException.BadArgument($"unknown value type '{type}'");
 			}
 		}
 
 		public static bool IsText(string type)
 		{
 			return SizeOf(type) < 0;
+		}
+
+		/// <summary>
+		/// Bytes per character of a text encoding. Throws -32002 for anything
+		/// that is not a text type — the single place that knows this mapping.
+		/// </summary>
+		public static int CharSizeOf(string type)
+		{
+			switch (Normalize(type))
+			{
+				case "utf8":
+					return 1;
+				case "utf16":
+					return 2;
+				case "utf32":
+					return 4;
+				default:
+					throw RpcException.BadArgument($"'{type}' is not a text type, expected utf8, utf16 or utf32");
+			}
 		}
 
 		public static Encoding EncodingOf(string type)
@@ -60,7 +79,7 @@ namespace McpPlugin.Serialization
 				case "utf32":
 					return Encoding.UTF32;
 				default:
-					throw RpcException.BadAddress($"'{type}' is not a text type");
+					throw RpcException.BadArgument($"'{type}' is not a text type");
 			}
 		}
 
@@ -96,7 +115,7 @@ namespace McpPlugin.Serialization
 						? new IntPtr(BitConverter.ToInt64(data, offset))
 						: new IntPtr(BitConverter.ToInt32(data, offset)));
 				default:
-					throw RpcException.BadAddress($"unknown value type '{type}'");
+					throw RpcException.BadArgument($"unknown value type '{type}'");
 			}
 		}
 
@@ -155,12 +174,12 @@ namespace McpPlugin.Serialization
 							: BitConverter.GetBytes(address.ToInt32());
 					}
 					default:
-						throw RpcException.BadAddress($"unknown value type '{type}'");
+						throw RpcException.BadArgument($"unknown value type '{type}'");
 				}
 			}
 			catch (Exception ex) when (ex is FormatException || ex is InvalidCastException || ex is OverflowException)
 			{
-				throw RpcException.BadAddress($"value is not convertible to '{type}': {ex.Message}");
+				throw RpcException.BadArgument($"value is not convertible to '{type}': {ex.Message}");
 			}
 		}
 
@@ -168,7 +187,7 @@ namespace McpPlugin.Serialization
 		public static string DecodeString(string type, byte[] data)
 		{
 			var encoding = EncodingOf(type);
-			var charSize = Normalize(type) == "utf8" ? 1 : (Normalize(type) == "utf16" ? 2 : 4);
+			var charSize = CharSizeOf(type);
 
 			var length = data.Length - data.Length % charSize;
 			for (var i = 0; i + charSize <= length; i += charSize)
@@ -196,7 +215,7 @@ namespace McpPlugin.Serialization
 		{
 			if (type == null)
 			{
-				throw RpcException.BadAddress("missing value type");
+				throw RpcException.BadArgument("missing value type");
 			}
 			return type.Trim().ToLowerInvariant();
 		}

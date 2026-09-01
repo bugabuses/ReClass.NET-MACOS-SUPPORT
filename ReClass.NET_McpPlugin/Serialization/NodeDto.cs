@@ -79,14 +79,14 @@ namespace McpPlugin.Serialization
 		{
 			if (string.IsNullOrEmpty(apiName))
 			{
-				throw RpcException.BadAddress("missing node type");
+				throw RpcException.BadArgument("missing node type");
 			}
 
 			EnsureLoaded();
 
 			if (!byName.TryGetValue(apiName.Trim(), out var type))
 			{
-				throw RpcException.BadAddress($"unknown node type '{apiName}'");
+				throw RpcException.BadArgument($"unknown node type '{apiName}'");
 			}
 			return type;
 		}
@@ -154,6 +154,64 @@ namespace McpPlugin.Serialization
 			memory.UpdateFrom(process, address);
 
 			return memory.ContainsValidData ? memory : null;
+		}
+
+		/// <summary>
+		/// Creates the memory buffer a node's own values must be read from.
+		///
+		/// A node's <c>Offset</c> is relative to its immediate parent, and
+		/// <see cref="ToDto"/> reads at <c>buffer.Offset + node.Offset</c>. For
+		/// a node nested inside a <c>ClassInstance</c> the containing class'
+		/// <c>AddressFormula</c> is *not* where that instance lives, so this
+		/// walks the <c>ParentNode</c> chain up to the outermost node, summing
+		/// the offsets, reads the outermost class at its resolved address and
+		/// shifts the buffer to the node's frame.
+		///
+		/// Returns null (so every value is reported as null rather than read
+		/// from the wrong place) when the chain crosses a
+		/// <see cref="PointerNode"/> — that needs a dereference, not an offset —
+		/// or when the outermost node is not a class.
+		///
+		/// Caveat: a class embedded in two different places has a single
+		/// <c>ParentNode</c>, pointing at whichever wrapper set it last, so for
+		/// a multiply-embedded class the walk follows that one parent.
+		/// </summary>
+		public static MemoryBuffer CreateMemoryFor(BaseNode node)
+		{
+			if (node == null)
+			{
+				return null;
+			}
+
+			var total = 0;
+
+			var current = node;
+			for (var guard = 0; current.ParentNode != null; ++guard)
+			{
+				if (guard > 256)
+				{
+					return null; // defensive: a cyclic parent chain
+				}
+
+				if (current.ParentNode is PointerNode)
+				{
+					return null; // the inner node lives behind a dereference
+				}
+
+				total += current.Offset;
+				current = current.ParentNode;
+			}
+
+			if (!(current is ClassNode rootClass))
+			{
+				return null;
+			}
+
+			var memory = CreateMemory(rootClass);
+
+			// ToDto adds node.Offset itself, so the buffer is based at the
+			// node's frame origin, not at the node.
+			return Shift(memory, total - node.Offset);
 		}
 
 		/// <summary>The index path of a node relative to its parent class.</summary>

@@ -72,7 +72,12 @@ namespace McpPlugin.Rpc
 			return Json.Serialize(response);
 		}
 
-		/// <summary>Dispatches one parsed request object. Returns null for notifications (no id).</summary>
+		/// <summary>
+		/// Dispatches one parsed request object. Returns null for notifications
+		/// only — a request is a notification when it carries no <c>id</c>
+		/// member at all. An explicit <c>"id": null</c> is a request and is
+		/// answered with <c>"id": null</c>, per JSON-RPC 2.0.
+		/// </summary>
 		public object DispatchObject(object request)
 		{
 			if (!(request is Dictionary<string, object> req))
@@ -80,10 +85,9 @@ namespace McpPlugin.Rpc
 				return ErrorResponse(null, -32600, "invalid request", null);
 			}
 
-			object id = null;
-			req.TryGetValue("id", out id);
+			req.TryGetValue("id", out var id);
 
-			var isNotification = !req.ContainsKey("id") || req["id"] == null;
+			var isNotification = !req.ContainsKey("id");
 
 			if (!req.TryGetValue("method", out var methodObj) || !(methodObj is string method))
 			{

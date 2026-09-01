@@ -82,7 +82,7 @@ namespace McpPlugin.Api
 
 			if (size < 0)
 			{
-				throw RpcException.BadAddress("'size' must not be negative");
+				throw RpcException.BadArgument("'size' must not be negative");
 			}
 
 			return UiThread.Invoke(() =>
@@ -125,7 +125,7 @@ namespace McpPlugin.Api
 
 				ProjectAccess.Refresh();
 
-				return (object)ProjectAccess.Ok();
+				return (object)Json.Ok();
 			});
 		}
 
@@ -153,6 +153,9 @@ namespace McpPlugin.Api
 					}
 
 					// Drop the referencing nodes first, then remove the class.
+					// The replacement bytes go back at the *same index* the
+					// removed node had — AddBytes would append them at the end
+					// of the class and shift every following field's offset.
 					foreach (var reference in ex.References.ToList())
 					{
 						reference.BeginUpdate();
@@ -163,8 +166,28 @@ namespace McpPlugin.Api
 							.ToList())
 						{
 							var size = child.MemorySize;
-							reference.RemoveNode(child);
-							reference.AddBytes(size);
+							var index = reference.FindNodeIndex(child);
+
+							if (!reference.RemoveNode(child))
+							{
+								continue;
+							}
+
+							// The node that took the removed node's place, or
+							// null when it was the last one (then appending is
+							// exactly right).
+							var successor = index >= 0 && index < reference.Nodes.Count
+								? reference.Nodes[index]
+								: null;
+
+							if (successor != null)
+							{
+								reference.InsertBytes(successor, size);
+							}
+							else
+							{
+								reference.AddBytes(size);
+							}
 						}
 						reference.EndUpdate();
 						reference.UpdateOffsets();
@@ -175,7 +198,7 @@ namespace McpPlugin.Api
 
 				ProjectAccess.Refresh();
 
-				return (object)ProjectAccess.Ok();
+				return (object)Json.Ok();
 			});
 		}
 
@@ -207,68 +230,83 @@ namespace McpPlugin.Api
 
 				ProjectAccess.Refresh();
 
-				return (object)ProjectAccess.Ok();
+				return (object)Json.Ok();
 			});
 		}
 
 		private object AddBytes(Dictionary<string, object> p)
 		{
-			var size = Params.Get<int>(p, "size");
-			if (size <= 0)
-			{
-				throw RpcException.BadAddress("'size' must be positive");
-			}
+			var size = RequirePositiveSize(p);
 
-			return UiThread.Invoke(() =>
-			{
-				var classNode = NodeSelector.ResolveClass(ProjectAccess.Project, p);
-
-				classNode.BeginUpdate();
-				classNode.AddBytes(size);
-				classNode.EndUpdate();
-
-				classNode.UpdateOffsets();
-
-				ProjectAccess.Refresh();
-
-				return (object)ProjectAccess.Ok();
-			});
+			return Mutate(() => NodeSelector.ResolveClass(ProjectAccess.Project, p), (container, node) => container.AddBytes(size));
 		}
 
 		private object InsertBytes(Dictionary<string, object> p)
 		{
+			var size = RequirePositiveSize(p);
+
+			return Mutate(
+				() => NodeSelector.ResolveNodeParam(ProjectAccess.Project, p),
+				(container, node) =>
+				{
+					if (ReferenceEquals(container, node))
+					{
+						// A class-only selector has no node to insert in front
+						// of, so this appends.
+						container.AddBytes(size);
+					}
+					else
+					{
+						container.InsertBytes(node, size);
+					}
+				});
+		}
+
+		private static int RequirePositiveSize(Dictionary<string, object> p)
+		{
 			var size = Params.Get<int>(p, "size");
 			if (size <= 0)
 			{
-				throw RpcException.BadAddress("'size' must be positive");
+				throw RpcException.BadArgument("'size' must be positive");
 			}
+			return size;
+		}
 
+		/// <summary>
+		/// Resolves a node, brackets the change to its container with
+		/// <c>BeginUpdate</c>/<c>EndUpdate</c>, re-computes the offsets and
+		/// repaints. The single place this file mutates the node tree.
+		/// </summary>
+		private static object Mutate(Func<BaseNode> resolve, Action<BaseContainerNode, BaseNode> change)
+		{
 			return UiThread.Invoke(() =>
 			{
-				var node = NodeSelector.ResolveNodeParam(ProjectAccess.Project, p);
+				var node = resolve();
 
-				var container = node.GetParentContainer();
+				// A container node (a class included) is its own target;
+				// GetParentContainer would walk past an embedded class to the
+				// class it is embedded in.
+				var container = node as BaseContainerNode ?? node.GetParentContainer();
 				if (container == null)
 				{
 					throw RpcException.NotFound("the node has no parent container");
 				}
 
 				container.BeginUpdate();
-				if (node is BaseContainerNode ownContainer && ReferenceEquals(container, node))
+				try
 				{
-					ownContainer.AddBytes(size);
+					change(container, node);
 				}
-				else
+				finally
 				{
-					container.InsertBytes(node, size);
+					container.EndUpdate();
 				}
-				container.EndUpdate();
 
 				container.UpdateOffsets();
 
 				ProjectAccess.Refresh();
 
-				return (object)ProjectAccess.Ok();
+				return (object)Json.Ok();
 			});
 		}
 	}

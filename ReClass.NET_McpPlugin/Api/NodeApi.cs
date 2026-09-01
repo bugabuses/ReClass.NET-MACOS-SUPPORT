@@ -25,12 +25,27 @@ namespace McpPlugin.Api
 			dispatcher.Register("node.types", Types);
 		}
 
-		/// <summary>Builds the dto of a node with the memory of its parent class.</summary>
+		/// <summary>
+		/// Builds the dto of a node.
+		///
+		/// Values need a memory buffer, and a buffer is only meaningful if we
+		/// know the node's absolute address. <see cref="NodeDto.CreateMemory"/>
+		/// resolves a class' own <c>AddressFormula</c>, which is only correct
+		/// for a top-level class: a node reached *through* a
+		/// <c>ClassInstance</c> lives at the outer class' address plus the
+		/// offsets along the way, not at the inner class' formula.
+		///
+		/// So the buffer is built by walking up from the node to the outermost
+		/// <see cref="ClassNode"/> (the one that is not itself embedded in
+		/// another class through a container), summing the container offsets on
+		/// the way, and reading at that class' resolved address. When the walk
+		/// crosses something whose absolute address cannot be computed — a
+		/// <c>Pointer</c>, which needs a dereference — no buffer is produced
+		/// and every <c>value</c> comes back null rather than wrong.
+		/// </summary>
 		private static object Describe(BaseNode node, int depth, bool withValues)
 		{
-			var classNode = node as ClassNode ?? node.GetParentClass();
-
-			var memory = withValues && classNode != null ? NodeDto.CreateMemory(classNode) : null;
+			var memory = withValues ? NodeDto.CreateMemoryFor(node) : null;
 
 			return NodeDto.ToDto(node, memory, Math.Max(depth, 0), withValues);
 		}
@@ -56,7 +71,7 @@ namespace McpPlugin.Api
 				var node = NodeSelector.ResolveNodeParam(project, p);
 				if (node is ClassNode)
 				{
-					throw RpcException.BadAddress("a class node can not change its type");
+					throw RpcException.BadArgument("a class node can not change its type");
 				}
 
 				var container = node.GetParentContainer();
@@ -75,38 +90,52 @@ namespace McpPlugin.Api
 				var newNode = BaseNode.CreateInstanceFromType(type, !hasExplicitInner);
 				if (newNode == null)
 				{
-					throw RpcException.BadAddress($"the node type '{type.Name}' can not be instantiated");
+					throw RpcException.BadArgument($"the node type '{type.Name}' can not be instantiated");
 				}
 
 				if (newNode is BaseWrapperNode wrapper)
 				{
 					if (!string.IsNullOrEmpty(classRef))
 					{
-						wrapper.ChangeInnerNode(NodeSelector.ResolveClass(project, classRef));
+						var innerClass = NodeSelector.ResolveClass(project, classRef);
+
+						// Without this the node graph can be made cyclic (a
+						// class reaching back to itself), and the very next
+						// repaint or MemorySize walk recurses until the process
+						// dies of a StackOverflowException, which .NET can not
+						// catch. Same guard as MainForm.cs / MainForm.Functions.cs.
+						RequireCycleFree(project, node, wrapper, innerClass);
+
+						ChangeInner(wrapper, innerClass);
 					}
 					else if (!string.IsNullOrEmpty(innerTypeName))
 					{
 						var innerNode = BaseNode.CreateInstanceFromType(NodeTypes.Resolve(innerTypeName), true);
 						if (innerNode == null)
 						{
-							throw RpcException.BadAddress($"the node type '{innerTypeName}' can not be instantiated");
+							throw RpcException.BadArgument($"the node type '{innerTypeName}' can not be instantiated");
 						}
-						wrapper.ChangeInnerNode(innerNode);
+						ChangeInner(wrapper, innerNode);
 					}
 				}
 				else if (!string.IsNullOrEmpty(classRef) || !string.IsNullOrEmpty(innerTypeName))
 				{
-					throw RpcException.BadAddress($"'{NodeTypes.ApiName(type)}' is not a wrapper node");
+					throw RpcException.BadArgument($"'{NodeTypes.ApiName(type)}' is not a wrapper node");
 				}
 
 				container.BeginUpdate();
 				try
 				{
+					if (container.FindNodeIndex(node) < 0)
+					{
+						throw RpcException.NotFound($"the node '{node.Name}' is not a child of '{container.Name}'");
+					}
+
 					container.ReplaceChildNode(node, newNode);
 				}
 				catch (ArgumentException)
 				{
-					throw RpcException.BadAddress($"'{container.GetType().Name}' can not hold a '{NodeTypes.ApiName(type)}' node");
+					throw RpcException.BadArgument($"'{container.GetType().Name}' can not hold a '{NodeTypes.ApiName(type)}' node");
 				}
 				finally
 				{
@@ -144,12 +173,11 @@ namespace McpPlugin.Api
 
 		private object Remove(Dictionary<string, object> p)
 		{
-			return UiThread.Invoke(() =>
+			return Mutate(p, node =>
 			{
-				var node = NodeSelector.ResolveNodeParam(ProjectAccess.Project, p);
 				if (node is ClassNode)
 				{
-					throw RpcException.BadAddress("use 'class.delete' to remove a class");
+					throw RpcException.BadArgument("use 'class.delete' to remove a class");
 				}
 
 				var container = node.GetParentContainer();
@@ -158,20 +186,10 @@ namespace McpPlugin.Api
 					throw RpcException.NotFound("the node has no parent container");
 				}
 
-				container.BeginUpdate();
-				var removed = container.RemoveNode(node);
-				container.EndUpdate();
-
-				if (!removed)
+				if (!container.RemoveNode(node))
 				{
-					throw RpcException.NotFound("the node is not a child of its container");
+					throw RpcException.NotFound($"the node '{node.Name}' is not a child of '{container.Name}'");
 				}
-
-				container.UpdateOffsets();
-
-				ProjectAccess.Refresh();
-
-				return (object)ProjectAccess.Ok();
 			});
 		}
 
@@ -180,7 +198,7 @@ namespace McpPlugin.Api
 			var count = Params.Get<int>(p, "count");
 			if (count <= 0)
 			{
-				throw RpcException.BadAddress("'count' must be positive");
+				throw RpcException.BadArgument("'count' must be positive");
 			}
 
 			return Mutate(p, node =>
@@ -198,7 +216,7 @@ namespace McpPlugin.Api
 						textNode.Length = count;
 						break;
 					default:
-						throw RpcException.BadAddress($"'{NodeTypes.ApiName(node.GetType())}' has no element count");
+						throw RpcException.BadArgument($"'{NodeTypes.ApiName(node.GetType())}' has no element count");
 				}
 			});
 		}
@@ -211,7 +229,7 @@ namespace McpPlugin.Api
 			{
 				if (!(node is BitFieldNode bitField))
 				{
-					throw RpcException.BadAddress($"'{NodeTypes.ApiName(node.GetType())}' is not a bit field");
+					throw RpcException.BadArgument($"'{NodeTypes.ApiName(node.GetType())}' is not a bit field");
 				}
 				bitField.Bits = bits;
 			});
@@ -221,30 +239,73 @@ namespace McpPlugin.Api
 		{
 			var name = Params.Get<string>(p, "enum");
 
-			return UiThread.Invoke(() =>
+			return Mutate(p, node =>
 			{
-				var project = ProjectAccess.Project;
-
-				var description = project.Enums.FirstOrDefault(e => string.Equals(e.Name, name, StringComparison.Ordinal));
+				var description = ProjectAccess.Project.Enums
+					.FirstOrDefault(e => string.Equals(e.Name, name, StringComparison.Ordinal));
 				if (description == null)
 				{
 					throw RpcException.NotFound($"no enum named '{name}'");
 				}
 
-				var node = NodeSelector.ResolveNodeParam(project, p);
 				if (!(node is EnumNode enumNode))
 				{
-					throw RpcException.BadAddress($"'{NodeTypes.ApiName(node.GetType())}' is not an enum node");
+					throw RpcException.BadArgument($"'{NodeTypes.ApiName(node.GetType())}' is not an enum node");
 				}
 
 				enumNode.ChangeEnum(description);
-
-				node.GetParentContainer()?.UpdateOffsets();
-
-				ProjectAccess.Refresh();
-
-				return (object)ProjectAccess.Ok();
 			});
+		}
+
+		/// <summary>
+		/// Sets a wrapper's inner node, mapping the host's refusal (an
+		/// incompatible inner type, e.g. a <c>ClassInstance</c> asked to wrap a
+		/// <c>UInt32</c>) to -32002 instead of a -32004 internal error.
+		/// </summary>
+		private static void ChangeInner(BaseWrapperNode wrapper, BaseNode innerNode)
+		{
+			try
+			{
+				wrapper.ChangeInnerNode(innerNode);
+			}
+			catch (InvalidOperationException ex)
+			{
+				throw RpcException.BadArgument(ex.Message);
+			}
+		}
+
+		/// <summary>
+		/// Refuses a <c>class_ref</c> which would make the class graph cyclic.
+		/// Mirrors <c>MainForm.IsCycleFree</c>.
+		/// </summary>
+		private static void RequireCycleFree(ReClassNetProject project, BaseNode target, BaseWrapperNode wrapper, BaseNode innerNode)
+		{
+			if (!(innerNode is ClassNode innerClass))
+			{
+				return;
+			}
+
+			// The node being replaced is not in the tree yet, so the parent
+			// class is taken from the node it replaces.
+			var parentClass = target.GetParentClass();
+			if (parentClass == null)
+			{
+				return;
+			}
+
+			// The wrapper is freshly created and not yet parented, so it is its
+			// own root wrapper; ask it whether the check applies at all.
+			var rootWrapper = wrapper.GetRootWrapperNode() ?? wrapper;
+			if (!rootWrapper.ShouldPerformCycleCheckForInnerNode())
+			{
+				return;
+			}
+
+			if (ClassUtil.IsCyclicIfClassIsAccessibleFromParent(parentClass, innerClass, project.Classes))
+			{
+				throw RpcException.BadArgument(
+					$"'{innerClass.Name}' can not be referenced from '{parentClass.Name}': it would create a class cycle");
+			}
 		}
 
 		private object Types(Dictionary<string, object> p)
@@ -275,7 +336,7 @@ namespace McpPlugin.Api
 
 				ProjectAccess.Refresh();
 
-				return (object)ProjectAccess.Ok();
+				return (object)Json.Ok();
 			});
 		}
 	}

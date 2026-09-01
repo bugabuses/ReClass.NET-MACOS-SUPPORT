@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""Throwaway smoke client for the ReClass.NET MCP plugin's JSON-RPC server.
+"""Live smoke test for the ReClass.NET MCP plugin's JSON-RPC server.
+
+Run it against a running ReClass.NET with the plugin loaded.
 
 Reads ~/.reclass-mcp.json, authenticates and exercises every RPC implemented
 by chunks 1-3. Requires a running ReClass.NET with the plugin loaded and a
@@ -352,14 +354,91 @@ def main():
     check("class.add_bytes", size_after == size_before + 16,
           "%d -> %d" % (size_before, size_after))
 
+    # class.rename, there and back again.
+    c.result("class.rename", **{"class": "McpTest", "name": "McpRenamed"})
+    renamed = any(cl["name"] == "McpRenamed" for cl in c.result("class.list"))
+    c.result("class.rename", **{"class": "McpRenamed", "name": "McpTest"})
+    check("class.rename",
+          renamed and any(cl["name"] == "McpTest"
+                          for cl in c.result("class.list")), "")
+
+    # class.insert_bytes in front of a node keeps the tail, grows the class.
+    tree = c.result("class.get", **{"class": "McpTest"})
+    size_before = tree["size"]
+    kid_count = len(tree["children"])
+    c.result("class.insert_bytes",
+             node={"class": "McpTest", "path": [1]}, size=8)
+    tree = c.result("class.get", **{"class": "McpTest"})
+    check("class.insert_bytes",
+          tree["size"] == size_before + 8
+          and len(tree["children"]) == kid_count + 1,
+          "%d -> %d bytes" % (size_before, tree["size"]))
+    c.result("node.remove", node={"class": "McpTest", "path": [1]})
+
+    # {class, offset} selector must find the same node as {class, path}.
+    tree = c.result("class.get", **{"class": "McpTest"})
+    target = tree["children"][2]
+    by_offset = c.result("node.get",
+                         node={"class": "McpTest", "offset": target["offset"]})
+    check("selector {class, offset}",
+          by_offset["path"] == target["path"]
+          and by_offset["offset"] == target["offset"],
+          "offset=%d path=%s" % (target["offset"], by_offset["path"]))
+
+    # class.get depth: 0 = no children, 2 = children of children.
+    d0 = c.result("class.get", **{"class": "McpTest", "depth": 0})
+    d1 = c.result("class.get", **{"class": "McpTest", "depth": 1})
+    d2 = c.result("class.get", **{"class": "McpTest", "depth": 2})
+    inst1 = next(k for k in d1["children"] if k["type"] == "ClassInstance")
+    inst2 = next(k for k in d2["children"] if k["type"] == "ClassInstance")
+    check("class.get depth=0 vs 2",
+          d0["children"] is None
+          and isinstance(d1["children"], list) and inst1["inner"] is None
+          and isinstance(d2["children"], list)
+          and inst2["inner"]["name"] == "McpOther",
+          "depth0=%s, depth1 inner=%s, depth2 inner=%s"
+          % (d0["children"], inst1["inner"],
+             inst2["inner"] and inst2["inner"]["name"]))
+
+    # node.set_bits on a bit field.
+    tree = c.result("class.get", **{"class": "McpTest"})
+    hex_index = next(i for i, k in enumerate(tree["children"])
+                     if k["type"] == "Hex64")
+    nb = {"class": "McpTest", "path": [hex_index]}
+    c.result("node.change_type", node=nb, type="BitField")
+    c.result("node.set_bits", node=nb, bits=16)
+    bits = c.result("node.get", node=nb)
+    check("node.set_bits", bits["count"] == 16, "count=%s" % bits["count"])
+
+    # A class may not reference itself: -32002, and the app stays alive.
+    cycle = c.call("node.change_type", node=nb, type="ClassInstance",
+                   class_ref="McpTest")
+    check("node.change_type self-reference -> -32002",
+          error_code(cycle) == -32002,
+          str(cycle.get("error", {}).get("message")))
+    check("host alive after cycle rejection",
+          c.result("system.info")["class_count"] >= 1, "")
+
+    # An inner type a ClassInstance can not hold -> -32002, not -32004.
+    bad_inner = c.call("node.change_type", node=nb, type="ClassInstance",
+                       inner_type="UInt32")
+    check("bad inner_type -> -32002", error_code(bad_inner) == -32002,
+          str(bad_inner.get("error", {}).get("message")))
+
     cpp = c.result("codegen.generate", language="cpp")["code"]
     check("codegen.generate cpp", "class McpTest" in cpp,
           "%d chars" % len(cpp))
 
     cs = c.result("codegen.generate", language="csharp")["code"]
     check("codegen.generate csharp",
-          "McpTest" in cs and "struct" in cs or "class McpTest" in cs,
+          "McpTest" in cs and ("struct" in cs or "class" in cs),
           "%d chars" % len(cs))
+
+    filtered = c.result("codegen.generate", language="cpp",
+                        classes=["McpOther"])["code"]
+    check("codegen.generate classes filter",
+          "McpOther" in filtered and "class McpTest" not in filtered,
+          "%d chars" % len(filtered))
 
     saved = c.result("project.save", path=project_path)
     check("project.save", os.path.exists(saved["path"]),
@@ -386,9 +465,75 @@ def main():
           error_code(referenced) == -32005 and refs == ["McpTest"],
           "references=%s" % (refs,))
 
+    # Record the offset of the node that follows the ClassInstance so the
+    # forced delete can be shown not to shift it.
+    tree = c.result("class.get", **{"class": "McpTest"})
+    inst_index = next(i for i, k in enumerate(tree["children"])
+                      if k["type"] == "ClassInstance")
+    successor_offset = (tree["children"][inst_index + 1]["offset"]
+                        if inst_index + 1 < len(tree["children"]) else None)
+    size_before = tree["size"]
+
     forced = c.result("class.delete", **{"class": "McpOther", "force": True})
     check("class.delete force", forced.get("ok") is True,
           "remaining=%s" % [cl["name"] for cl in c.result("class.list")])
+
+    tree = c.result("class.get", **{"class": "McpTest"})
+    check("class.delete force keeps later offsets",
+          tree["size"] == size_before
+          and (successor_offset is None
+               or any(k["offset"] == successor_offset
+                      for k in tree["children"])),
+          "successor offset %s still present, size %d -> %d"
+          % (successor_offset, size_before, tree["size"]))
+
+    # enum.delete removes the enum from the project.
+    c.result("enum.set", name="McpDoomed", size=4, flags=False,
+             values={"A": 0})
+    c.result("enum.delete", name="McpDoomed")
+    check("enum.delete",
+          "McpDoomed" not in c.result("project.info")["enums"],
+          json.dumps(c.result("project.info")["enums"]))
+
+    # A bad path must never wipe the loaded project.
+    before_classes = [cl["name"] for cl in c.result("class.list")]
+    bad_ext = c.call("project.load", path=project_path + ".txt")
+    missing = c.call("project.load",
+                     path=os.path.join(scratch, "no-such-project.rcnet"))
+    check("project.load bad extension -> -32002",
+          error_code(bad_ext) == -32002,
+          str(bad_ext.get("error", {}).get("message")))
+    check("project.load missing file -> -32003",
+          error_code(missing) == -32003,
+          str(missing.get("error", {}).get("message")))
+    check("project.load failure keeps the project",
+          [cl["name"] for cl in c.result("class.list")] == before_classes,
+          "%s" % (before_classes,))
+
+    # Addresses are unsigned.
+    check("negative address -> -32002",
+          error_code(c.call("memory.read", address=-16, size=4)) == -32002, "")
+    check("negative address string -> -32002",
+          error_code(c.call("memory.read", address="-0x10", size=4)) == -32002,
+          "")
+
+    # An unknown string encoding is rejected before any read.
+    check("read_string bad encoding -> -32002",
+          error_code(c.call("memory.read_string", address="0x%X" % base,
+                            encoding="ebcdic")) == -32002, "")
+
+    # A uuid that matches nothing is not looked up as a name.
+    unknown_uuid = c.call("class.get",
+                          **{"class": "00000000-0000-0000-0000-000000000000"})
+    check("unknown uuid -> -32003",
+          error_code(unknown_uuid) == -32003
+          and "uuid" in unknown_uuid.get("error", {}).get("message", ""),
+          str(unknown_uuid.get("error", {}).get("message")))
+
+    # An explicit null id is a request, a missing id is a notification.
+    check("explicit id=null gets a response",
+          (c.send({"jsonrpc": "2.0", "id": None, "method": "system.info"})
+           or {}).get("id", "missing") is None, "")
 
     check("node.get bad path -> -32003",
           error_code(c.call("node.get",

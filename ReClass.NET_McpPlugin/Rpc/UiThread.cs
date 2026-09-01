@@ -1,5 +1,6 @@
 using System;
 using System.Reflection;
+using System.Runtime.ExceptionServices;
 using System.Windows.Forms;
 
 namespace McpPlugin.Rpc
@@ -14,6 +15,24 @@ namespace McpPlugin.Rpc
 			control = mainWindow;
 		}
 
+		/// <summary>Drops the reference to the main window (plugin shutdown).</summary>
+		public static void Terminate()
+		{
+			control = null;
+		}
+
+		/// <summary>
+		/// Runs <paramref name="func"/> on the UI thread and returns its result;
+		/// exceptions are rethrown with their original stack trace.
+		///
+		/// Deadlock caveat: this is a *blocking* <see cref="Control.Invoke"/>.
+		/// If the UI thread is not pumping messages — it is inside a modal loop
+		/// that does not dispatch, blocked on a long operation, or waiting on
+		/// this very RPC call — the calling client thread blocks for as long as
+		/// that lasts, with no timeout. Every handler that touches the project
+		/// or node tree goes through here, so a wedged UI thread wedges the RPC
+		/// server's client threads too (the accept loop keeps running).
+		/// </summary>
 		public static T Invoke<T>(Func<T> func)
 		{
 			var target = control;
@@ -28,7 +47,9 @@ namespace McpPlugin.Rpc
 			}
 			catch (TargetInvocationException ex) when (ex.InnerException != null)
 			{
-				throw ex.InnerException;
+				// Rethrow the original exception with its stack trace intact.
+				ExceptionDispatchInfo.Capture(ex.InnerException).Throw();
+				throw; // unreachable, keeps the compiler happy
 			}
 		}
 

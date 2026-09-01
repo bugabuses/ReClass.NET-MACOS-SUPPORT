@@ -49,13 +49,13 @@ namespace McpPlugin.Api
 
 			if (size != 1 && size != 2 && size != 4 && size != 8)
 			{
-				throw RpcException.BadAddress("'size' must be 1, 2, 4 or 8");
+				throw RpcException.BadArgument("'size' must be 1, 2, 4 or 8");
 			}
 
 			var raw = Params.AsObject(Params.GetRaw(p, "values"), "values");
 			if (raw.Count == 0)
 			{
-				throw RpcException.BadAddress("'values' must not be empty");
+				throw RpcException.BadArgument("'values' must not be empty");
 			}
 
 			var values = new List<KeyValuePair<string, long>>(raw.Count);
@@ -70,7 +70,7 @@ namespace McpPlugin.Api
 				}
 				catch (Exception)
 				{
-					throw RpcException.BadAddress($"the value of '{pair.Key}' is not an integer");
+					throw RpcException.BadArgument($"the value of '{pair.Key}' is not an integer");
 				}
 
 				values.Add(new KeyValuePair<string, long>(pair.Key, value));
@@ -94,7 +94,7 @@ namespace McpPlugin.Api
 				}
 				catch (ArgumentOutOfRangeException)
 				{
-					throw RpcException.BadAddress($"a value does not fit into {size} byte(s)");
+					throw RpcException.BadArgument($"a value does not fit into {size} byte(s)");
 				}
 
 				if (created)
@@ -137,7 +137,7 @@ namespace McpPlugin.Api
 
 				ProjectAccess.Refresh();
 
-				return (object)ProjectAccess.Ok();
+				return (object)Json.Ok();
 			});
 		}
 	}
