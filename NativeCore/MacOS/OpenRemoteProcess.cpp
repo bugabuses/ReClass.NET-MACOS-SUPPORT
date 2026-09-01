@@ -1,2 +1,11 @@
-#include "NativeCore.hpp"
-extern "C" RC_Pointer RC_CallConv OpenRemoteProcess(RC_Pointer id, ProcessAccess desiredAccess) { return nullptr; }
+#include "TaskPorts.hpp"
+
+extern "C" RC_Pointer RC_CallConv OpenRemoteProcess(RC_Pointer id, ProcessAccess desiredAccess)
+{
+	const auto pid = HandleToPid(id);
+	if (!TaskPorts::Acquire(pid))
+	{
+		return nullptr;
+	}
+	return id;
+}
