@@ -92,6 +92,52 @@ RUN apt-get update \
  && apt-get clean all
 ```
 
+## macOS (experimental)
+
+ReClass.NET runs on Apple Silicon macOS under Mono with the X11 WinForms backend.
+
+**Prerequisites**
+
+```
+brew install mono autoconf automake libtool pkg-config glib libpng jpeg giflib libtiff libexif pango
+brew install --cask xquartz
+```
+
+Then log out and back in, and start XQuartz once.
+
+**Build**
+
+The build requires two native pieces in addition to the C# binaries:
+
+```
+make macos                                # builds launcher, app, NativeCore.dylib into build/Release/x64
+scripts/build-libgdiplus-macos.sh         # builds libgdiplus from source with cairo-xlib support
+scripts/build-xim-shim-macos.sh           # builds XIM interpose shim
+```
+
+(Do not run `make macos_update`; it is known not to work.)
+
+**Run**
+
+```
+./run-macos.sh
+```
+
+The script runs Mono as root via `sudo` because `task_for_pid` requires it. It will fail loudly if the libgdiplus or XIM shim builds are missing.
+
+**Known Issues**
+
+- Non-fatal X11 `BadFont` and `BadCursor` errors print to stderr.
+
+**Limitations**
+
+- Reading other processes requires root. Even as root, macOS System Integrity Protection prevents attaching to Apple-signed / hardened-runtime processes; third-party apps and games work.
+- The debugger ("Find out what accesses/writes this address") is not available.
+- Disassembly uses distorm (x86 only). It is correct for x86_64 processes running under Rosetta and meaningless for native arm64 processes.
+- Debug symbols (PDB) and file-type registration are Windows-only.
+- The UI is drawn through XQuartz and does not look native.
+- Attach-to-process was not end-to-end verified in this port yet (experimental).
+
 ## Videos
 
 [Youtube Playlist](https://www.youtube.com/playlist?list=PLO246BmtoITanq3ygMCL8_w0eov4D8hjk)
