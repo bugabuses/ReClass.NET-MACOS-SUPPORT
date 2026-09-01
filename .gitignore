@@ -256,3 +256,6 @@ paket-files/
 NativeCore/MacOS/obj/
 NativeCore/MacOS/build/
 NativeCore/MacOS/test/harness
+
+# libgdiplus built from source by scripts/build-libgdiplus-macos.sh
+Dependencies/macos/

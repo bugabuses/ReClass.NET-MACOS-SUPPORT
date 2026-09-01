@@ -17,10 +17,20 @@ if [ ! -f "$APP/NativeCore.dylib" ]; then
 fi
 
 export DISPLAY="${DISPLAY:-:0}"
-export DYLD_LIBRARY_PATH="/opt/homebrew/lib"
+
+# Prefer a from-source libgdiplus built with cairo-xlib support (see
+# scripts/build-libgdiplus-macos.sh) over Homebrew's libgdiplus, which is
+# usually built without X11 support and is missing
+# GdipCreateFromXDrawable_linux, needed by Mono WinForms' X11 backend.
+LOCAL_GDIPLUS="$DIR/Dependencies/macos/libgdiplus/lib"
+if [ -d "$LOCAL_GDIPLUS" ]; then
+	export DYLD_LIBRARY_PATH="$LOCAL_GDIPLUS:/opt/X11/lib:/opt/homebrew/lib"
+else
+	export DYLD_LIBRARY_PATH="/opt/homebrew/lib"
+fi
 # Force Mono's WinForms X11 backend; otherwise it defaults to the
 # unsupported/broken Carbon driver on macOS and throws
 # EntryPointNotFoundException (HIViewPlaceInSuperviewAt).
 export MONO_MWF_MAC_FORCE_X11=1
 cd "$APP"
-exec sudo -E env DISPLAY="$DISPLAY" DYLD_LIBRARY_PATH=/opt/homebrew/lib MONO_MWF_MAC_FORCE_X11=1 "$(command -v mono)" ReClass.NET.exe "$@"
+exec sudo -E env DISPLAY="$DISPLAY" DYLD_LIBRARY_PATH="$DYLD_LIBRARY_PATH" MONO_MWF_MAC_FORCE_X11=1 "$(command -v mono)" ReClass.NET.exe "$@"
