@@ -1,3 +1,4 @@
+#include <cstdint>
 #include <mach/mach.h>
 #include <mach/mach_vm.h>
 
@@ -12,7 +13,7 @@ namespace
 	}
 
 	// Queries the protection of the region containing address.
-	bool QueryProtection(mach_port_t task, mach_vm_address_t address, vm_prot_t& protection)
+	bool QueryProtection(mach_port_t task, mach_vm_address_t address, vm_prot_t& protection, mach_vm_address_t& regionEnd)
 	{
 		mach_vm_address_t regionAddress = address;
 		mach_vm_size_t regionSize = 0;
@@ -26,6 +27,7 @@ namespace
 			return false;
 		}
 		protection = info.protection;
+		regionEnd = regionAddress + regionSize;
 		return true;
 	}
 }
@@ -56,9 +58,20 @@ extern "C" bool RC_CallConv WriteRemoteMemory(RC_Pointer handle, RC_Pointer addr
 	const mach_vm_size_t pageLen = ((target + size + vm_page_size - 1) & ~static_cast<mach_vm_address_t>(vm_page_size - 1)) - pageStart;
 
 	vm_prot_t original = VM_PROT_NONE;
-	const bool haveOriginal = QueryProtection(task, target, original);
+	mach_vm_address_t regionEnd = 0;
+	const bool haveOriginal = QueryProtection(task, target, original, regionEnd);
 
-	if (mach_vm_protect(task, pageStart, pageLen, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS)
+	// Check if write extends past region boundary.
+	if (haveOriginal && target + size > regionEnd)
+	{
+		return false;
+	}
+
+	// Clamp protect/restore range to region.
+	const mach_vm_address_t protectEnd = haveOriginal ? std::min(pageStart + pageLen, regionEnd) : pageStart + pageLen;
+	const mach_vm_size_t protectLen = protectEnd - pageStart;
+
+	if (mach_vm_protect(task, pageStart, protectLen, FALSE, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS)
 	{
 		return false;
 	}
@@ -67,7 +80,7 @@ extern "C" bool RC_CallConv WriteRemoteMemory(RC_Pointer handle, RC_Pointer addr
 
 	if (haveOriginal)
 	{
-		mach_vm_protect(task, pageStart, pageLen, FALSE, original);
+		mach_vm_protect(task, pageStart, protectLen, FALSE, original);
 	}
 
 	return ok;
