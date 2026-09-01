@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using McpPlugin.Rpc;
@@ -171,15 +172,33 @@ namespace McpPlugin
 			}
 		}
 
+		// mode_t/uid_t/gid_t are 16/32 bit unsigned on macOS and Linux; the
+		// extra width is ignored by the callee. Calling libc directly is more
+		// reliable than spawning /bin/chmod from inside the GUI process.
+		[DllImport("libc", EntryPoint = "chmod", SetLastError = true)]
+		private static extern int SysChmod(string path, uint mode);
+
+		[DllImport("libc", EntryPoint = "chown", SetLastError = true)]
+		private static extern int SysChown(string path, uint owner, uint group);
+
 		private static void Chmod600(string path)
 		{
 			if (!IsUnix)
 			{
 				return;
 			}
-			RunQuietly("/bin/chmod", "600 \"" + path + "\"");
+
+			try
+			{
+				SysChmod(path, 0x180 /* 0600 */);
+			}
+			catch (Exception)
+			{
+				// ignored
+			}
 		}
 
+		/// <summary>Hands the file to the user who invoked sudo, so the bridge can read it.</summary>
 		private static void ChownToInvokingUser(string path)
 		{
 			if (!IsUnix)
@@ -187,47 +206,24 @@ namespace McpPlugin
 				return;
 			}
 
-			var uid = Environment.GetEnvironmentVariable("SUDO_UID");
-			var gid = Environment.GetEnvironmentVariable("SUDO_GID");
-			if (string.IsNullOrEmpty(uid))
+			if (!uint.TryParse(Environment.GetEnvironmentVariable("SUDO_UID"), out var uid))
 			{
 				return;
 			}
-
-			var owner = string.IsNullOrEmpty(gid) ? uid : uid + ":" + gid;
-
-			foreach (var chown in new[] { "/usr/sbin/chown", "/bin/chown", "/usr/bin/chown" })
+			if (!uint.TryParse(Environment.GetEnvironmentVariable("SUDO_GID"), out var gid))
 			{
-				if (File.Exists(chown) && RunQuietly(chown, owner + " \"" + path + "\""))
-				{
-					return;
-				}
+				gid = uint.MaxValue; // -1: leave the group unchanged
 			}
-		}
 
-		private static bool RunQuietly(string fileName, string arguments)
-		{
 			try
 			{
-				var startInfo = new ProcessStartInfo(fileName, arguments)
-				{
-					UseShellExecute = false,
-					CreateNoWindow = true,
-					RedirectStandardError = true,
-					RedirectStandardOutput = true
-				};
-				using (var process = System.Diagnostics.Process.Start(startInfo))
-				{
-					process.StandardOutput.ReadToEnd();
-					process.StandardError.ReadToEnd();
-					process.WaitForExit(5000);
-					return process.ExitCode == 0;
-				}
+				SysChown(path, uid, gid);
 			}
 			catch (Exception)
 			{
-				return false;
+				// ignored
 			}
 		}
+
 	}
 }
