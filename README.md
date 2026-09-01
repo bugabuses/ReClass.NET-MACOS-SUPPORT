@@ -186,3 +186,11 @@ Settings
 - [DrP3pp3r](https://github.com/DrP3pp3r)
 - [ko1N](https://github.com/ko1N)
 - [Niemand](https://github.com/niemand-sec) (see his talk at [BlackHat Europe 2019 (London) "Unveiling the underground world of Anti-Cheats"](https://www.blackhat.com/eu-19/briefings/schedule/index.html#unveiling-the-underground-world-of-anti-cheats-17358))
+
+## MCP server
+
+ReClass.NET can be driven by MCP clients (e.g. Claude Code) via a Python
+bridge that talks to an in-process C# plugin over a local TCP/JSON-RPC
+connection, exposing process control, memory access, project/class/node
+editing, code generation, scanning, and analysis as MCP tools. See
+[`mcp/README.md`](mcp/README.md) for setup and registration instructions.

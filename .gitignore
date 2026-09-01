@@ -259,3 +259,8 @@ NativeCore/MacOS/test/harness
 
 # libgdiplus built from source by scripts/build-libgdiplus-macos.sh
 Dependencies/macos/
+
+# Python MCP bridge (mcp/)
+mcp/.venv/
+mcp/**/__pycache__/
+mcp/*.egg-info
