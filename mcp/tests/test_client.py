@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 
 import pytest
 
@@ -88,7 +89,11 @@ class FakeServer:
             pass
 
 
-def write_endpoint(path, port, token=TOKEN, pid=1234):
+def write_endpoint(path, port, token=TOKEN, pid=None):
+    # Default to our own pid so the client's liveness check (os.kill(pid, 0))
+    # sees a live process rather than a fabricated, always-dead one.
+    if pid is None:
+        pid = os.getpid()
     path.write_text(json.dumps({"port": port, "token": token, "pid": pid}))
 
 
@@ -220,6 +225,19 @@ async def test_call_timeout(tmp_path):
     finally:
         await client.close()
         await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_stale_pid_raises_clear_error(tmp_path):
+    # Pick a pid almost certainly not in use.
+    dead_pid = 999999
+    endpoint = tmp_path / "endpoint.json"
+    write_endpoint(endpoint, port=1, pid=dead_pid)
+    client = RcClient(endpoint_path=endpoint, timeout=2)
+    with pytest.raises(ConnectionError) as exc_info:
+        await client.connect()
+    assert str(dead_pid) in str(exc_info.value)
+    assert "not running" in str(exc_info.value)
 
 
 @pytest.mark.asyncio

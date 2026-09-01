@@ -264,3 +264,4 @@ Dependencies/macos/
 mcp/.venv/
 mcp/**/__pycache__/
 mcp/*.egg-info
+mcp/.pytest_cache/

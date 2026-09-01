@@ -64,8 +64,12 @@ async def _invoke(method: str, **params: Any) -> Any:
         name = ERROR_NAMES.get(exc.code, "error")
         raise ToolError(f"{exc.code} {name}: {exc.message}") from exc
     except TimeoutError as exc:
+        # -1 codes are bridge-local (not part of the plugin's JSON-RPC error
+        # table): the RPC call never reached/returned from the plugin at all.
         raise ToolError(f"-1 timeout: {exc}") from exc
     except ConnectionError as exc:
+        # -1 connection: could not reach or stayed connected to the plugin
+        # (endpoint file missing/stale, plugin not running, socket dropped).
         raise ToolError(f"-1 connection: {exc}") from exc
 
 
@@ -267,11 +271,11 @@ async def class_list() -> str:
 
 
 @mcp.tool()
-async def class_get(class_: str, depth: int = 1, with_values: bool = True) -> str:
+async def class_get(class_name: str, depth: int = 1, with_values: bool = True) -> str:
     """Get a class's node tree, optionally with live memory values.
-    `class_` is a class name or UUID. `depth` limits how far nested class instances expand.
+    `class_name` is a class name or UUID. `depth` limits how far nested class instances expand.
     Returns JSON: a node DTO tree (see module docstring for node selector shape)."""
-    return _dump(await _invoke("class.get", **{"class": class_, "depth": depth, "with_values": with_values}))
+    return _dump(await _invoke("class.get", **{"class": class_name, "depth": depth, "with_values": with_values}))
 
 
 @mcp.tool()
@@ -287,39 +291,39 @@ async def class_create(name: Optional[str] = None, address_formula: Optional[str
 
 
 @mcp.tool()
-async def class_rename(class_: str, name: str) -> str:
-    """Rename a class. `class_` is a class name or UUID.
+async def class_rename(class_name: str, name: str) -> str:
+    """Rename a class. `class_name` is a class name or UUID.
     Returns JSON: {ok}."""
-    return _dump(await _invoke("class.rename", **{"class": class_, "name": name}))
+    return _dump(await _invoke("class.rename", **{"class": class_name, "name": name}))
 
 
 @mcp.tool()
-async def class_delete(class_: str, force: bool = False) -> str:
-    """Delete a class. `class_` is a class name or UUID.
+async def class_delete(class_name: str, force: bool = False) -> str:
+    """Delete a class. `class_name` is a class name or UUID.
     Fails with `referenced` (data.references) unless `force` is true.
     Returns JSON: {ok}."""
-    return _dump(await _invoke("class.delete", **{"class": class_, "force": force}))
+    return _dump(await _invoke("class.delete", **{"class": class_name, "force": force}))
 
 
 @mcp.tool()
-async def class_set_address(class_: str, address_formula: str) -> str:
-    """Set a class's address formula. `class_` is a class name or UUID.
+async def class_set_address(class_name: str, address_formula: str) -> str:
+    """Set a class's address formula. `class_name` is a class name or UUID.
     Returns JSON: {ok, resolved}."""
-    return _dump(await _invoke("class.set_address", **{"class": class_, "address_formula": address_formula}))
+    return _dump(await _invoke("class.set_address", **{"class": class_name, "address_formula": address_formula}))
 
 
 @mcp.tool()
-async def class_select(class_: str) -> str:
+async def class_select(class_name: str) -> str:
     """Make a class the current selected class in the ReClass.NET UI.
     Returns JSON: {ok}."""
-    return _dump(await _invoke("class.select", **{"class": class_}))
+    return _dump(await _invoke("class.select", **{"class": class_name}))
 
 
 @mcp.tool()
-async def class_add_bytes(class_: str, size: int) -> str:
-    """Append `size` bytes of padding to a class. `class_` is a class name or UUID.
+async def class_add_bytes(class_name: str, size: int) -> str:
+    """Append `size` bytes of padding to a class. `class_name` is a class name or UUID.
     Returns JSON: {ok}."""
-    return _dump(await _invoke("class.add_bytes", **{"class": class_, "size": size}))
+    return _dump(await _invoke("class.add_bytes", **{"class": class_name, "size": size}))
 
 
 @mcp.tool()
@@ -531,13 +535,13 @@ async def scan_reset() -> str:
 
 
 @mcp.tool()
-async def analysis_dissect(class_: Optional[str] = None, node: Optional[NodeSelector] = None) -> str:
+async def analysis_dissect(class_name: Optional[str] = None, node: Optional[NodeSelector] = None) -> str:
     """Dissect hex nodes under a class or a specific node into guessed types.
-    Provide exactly one of `class_` (name/uuid) or `node` (selector).
+    Provide exactly one of `class_name` (name/uuid) or `node` (selector).
     Returns JSON: {changed:[node dtos]}."""
     params: dict[str, Any] = {}
-    if class_ is not None:
-        params["class"] = class_
+    if class_name is not None:
+        params["class"] = class_name
     if node is not None:
         params["node"] = node
     return _dump(await _invoke("analysis.dissect", **params))

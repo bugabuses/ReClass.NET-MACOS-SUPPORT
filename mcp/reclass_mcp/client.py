@@ -64,7 +64,7 @@ class RcClient:
         self._lock = asyncio.Lock()
         self._connected = False
 
-    def _read_endpoint(self) -> dict:
+    def _read_endpoint_sync(self) -> dict:
         try:
             raw = self._endpoint_path.read_text()
         except FileNotFoundError as exc:
@@ -76,7 +76,22 @@ class RcClient:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ConnectionError(f"malformed endpoint file {self._endpoint_path}: {exc}") from exc
+
+        pid = data.get("pid")
+        if pid is not None:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError as exc:
+                raise ConnectionError(
+                    f"ReClass.NET (pid {pid}) is not running; stale endpoint file {self._endpoint_path}"
+                ) from exc
+            except PermissionError:
+                pass  # process exists but is owned by someone else (e.g. root) -> alive
         return data
+
+    async def _read_endpoint(self) -> dict:
+        # File IO + os.kill are cheap but blocking; keep the event loop free.
+        return await asyncio.to_thread(self._read_endpoint_sync)
 
     async def connect(self) -> None:
         """Connect, authenticate, and start the background reader task."""
@@ -85,7 +100,7 @@ class RcClient:
 
     async def _connect_locked(self) -> None:
         await self._close_locked()
-        endpoint = self._read_endpoint()
+        endpoint = await self._read_endpoint()
         port = endpoint["port"]
         token = endpoint["token"]
 

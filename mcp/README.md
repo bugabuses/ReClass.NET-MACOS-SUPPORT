@@ -51,7 +51,18 @@ file:
 `reclass-mcp` reads this file on first use (and again on reconnect) to find
 and authenticate to the running plugin. If ReClass.NET (with the MCP plugin
 loaded) isn't running, every tool call fails with a connection error telling
-you so.
+you so. Before connecting, it also checks that the `pid` in the endpoint
+file is still alive; a stale file left behind by a closed ReClass.NET
+produces a clear "not running" error instead of a raw connection failure.
+
+## Errors
+
+Tool errors from the plugin surface as `<code> <name>: <message>` (see the
+plugin's JSON-RPC error table for codes/names). Two extra bridge-local
+codes are used when the RPC call never reached or returned from the plugin
+at all: `-1 timeout` (the call exceeded `RECLASS_MCP_TIMEOUT`) and
+`-1 connection` (couldn't connect, or the connection dropped and could not
+be re-established).
 
 ## Environment overrides
 
